@@ -386,7 +386,7 @@ def _rolemenu_block(guild, urlkey):
     roles = "".join(
         f"<label class=pill><input type=checkbox name=roles value={r.id}> {r.name}</label>"
         for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)[:25]
-        if not r.is_default() and not r.managed)
+        if not r.is_default() and not r.managed and not r.permissions.administrator)
     chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
     return (("".join(rows) or "<p><small>No menus yet.</small></p>")
             + f"<form method=post action='/api/rolemenu?key={urlkey}'>"

@@ -1860,6 +1860,13 @@ class RoleToggleButton(discord.ui.Button):
             except (discord.Forbidden, discord.HTTPException):
                 pass
             return
+        if role.permissions.administrator or role.managed:
+            try:
+                await interaction.response.send_message(
+                    "🔒 Admin/managed roles can't be self-served.", ephemeral=True)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            return
         try:
             if role in member.roles:
                 await member.remove_roles(role, reason="Role menu toggle")
@@ -1915,10 +1922,12 @@ async def cmd_rolemenu(ctx: commands.Context, *args: str) -> None:
             r = ctx.guild.get_role(int(a.strip("<>@#!&")))
         except ValueError:
             continue
-        if r and r != ctx.guild.default_role and r.id not in rids:
+        if r and r != ctx.guild.default_role and r.id not in rids \
+                and not r.permissions.administrator and not r.managed:
             rids.append(r.id)
     if not rids:
-        await ctx.send(f"Usage: `{PREFIX}rolemenu @role1 @role2 ...` (tap buttons to toggle).")
+        await ctx.send(f"Usage: `{PREFIX}rolemenu @role1 @role2 ...` "
+                       f"(admin/managed roles can't be self-served).")
         return
     embed = discord.Embed(title="🎭 Pick your roles", description="Tap a button to add/remove it.",
                           color=discord.Color.blurple())
