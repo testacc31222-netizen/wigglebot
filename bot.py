@@ -226,6 +226,7 @@ intents.guilds = True
 intents.members = True          # PRIVILEGED — enable in Developer Portal
 intents.messages = True
 intents.message_content = True  # PRIVILEGED — needed for ! prefix commands
+intents.voice_states = True     # VC join/moderation
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
@@ -548,6 +549,18 @@ async def on_ready() -> None:
         qotd_loop.start()
     for guild in bot.guilds:
         await cache_guild_invites(guild)
+        vcid = get_config(guild.id).get("mod_vc_channel_id")
+        if vcid:
+            ch = guild.get_channel(vcid)
+            if isinstance(ch, discord.VoiceChannel):
+                try:
+                    if guild.voice_client:
+                        await guild.voice_client.move_to(ch)
+                    else:
+                        await ch.connect()
+                    print(f"[vc] rejoined {ch.name} in {guild.name}")
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    print(f"[vc] rejoin failed: {exc}")
 
 
 @bot.event
@@ -2217,6 +2230,53 @@ async def cmd_setchat(ctx: commands.Context, channel: str = "") -> None:
     await ctx.send(f"✅ I'll only chat in {target.mention}.")
 
 
+@bot.command(name="vcjoin")
+@owner_or_admin()
+async def cmd_vcjoin(ctx: commands.Context, channel: str = "") -> None:
+    """Bot joins a VC and sits in it. Usage: .vcjoin [#voice] (blank = your VC)"""
+    target = None
+    if channel:
+        try:
+            c = ctx.guild.get_channel(int(channel.strip("<#>")))
+            if isinstance(c, discord.VoiceChannel):
+                target = c
+        except ValueError:
+            pass
+    elif ctx.author.voice and ctx.author.voice.channel:
+        target = ctx.author.voice.channel
+    if target is None:
+        await ctx.send(f"Sit in a VC first, or `.vcjoin #voice`.")
+        return
+    try:
+        vc = ctx.guild.voice_client
+        if vc and vc.channel and vc.channel.id == target.id:
+            await ctx.send(f"Already in {target.mention}.")
+            return
+        if vc:
+            await vc.move_to(target)
+        else:
+            await target.connect()
+        update_config(ctx.guild.id, mod_vc_channel_id=target.id)
+        await ctx.send(f"🎧 Joined {target.mention} — moderating VC. `.vcleave` to bounce me.")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        await ctx.send(f"❌ Can't join (need Connect perm): {exc}")
+
+
+@bot.command(name="vcleave")
+@owner_or_admin()
+async def cmd_vcleave(ctx: commands.Context) -> None:
+    vc = ctx.guild.voice_client if ctx.guild else None
+    if not vc:
+        await ctx.send("Not in a VC.")
+        return
+    try:
+        await vc.disconnect()
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    update_config(ctx.guild.id, mod_vc_channel_id=None)
+    await ctx.send("👋 Left VC.")
+
+
 @bot.command(name="setlobby")
 @owner_or_admin()
 async def cmd_setlobby(ctx: commands.Context, channel: str = "") -> None:
@@ -2707,6 +2767,8 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_statusbot.error
 @cmd_setbio.error
 @cmd_setlobby.error
+@cmd_vcjoin.error
+@cmd_vcleave.error
 @cmd_whitelist.error
 @cmd_say.error
 @cmd_explode.error
@@ -2740,7 +2802,7 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "rolemenu", "teach", "unteach", "mood",
                                                      "setqotd", "chaton", "chatoff", "explode",
                                                      "ticketsetup", "setwelcome", "setgoodbye",
-                                                     "linkchannel"):
+                                                     "linkchannel", "vcjoin", "vcleave"):
             await ctx.send("❌ Bot owner or server admin only.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
