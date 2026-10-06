@@ -45,20 +45,20 @@ a{{color:#7aa2f7}}
 </body></html>"""
 
 
-def run_thread():
+def create_app():
     try:
         from flask import Flask, request, jsonify, redirect
     except ImportError:
-        print("[dash] Flask not installed — dashboard off (pip install flask)")
-        return
-    if not DASHBOARD_KEY:
-        print("[dash] No DASHBOARD_KEY — dashboard disabled")
-        return
+        return None
     app = Flask(__name__)
 
     def guilds():
         b = _bot()
-        return b.guilds if b else []
+        disc = getattr(b, "bot", None)
+        return disc.guilds if disc else []
+
+    def _discord():
+        return getattr(_bot(), "bot", None)
 
     @app.get("/")
     def index():
@@ -144,10 +144,11 @@ Channel: {vchan.mention if vchan else '—'} · Role: {vrole.name if vrole else 
             menus = b.rr_data.get(str(gid), [])
             try:
                 m = menus.pop(int(request.form.get("idx", -1)))
-                g = b.get_guild(gid)
+                disc = _discord()
+                g = disc.get_guild(gid) if disc else None
                 ch = g.get_channel(m["channel"]) if g else None
                 if ch:
-                    fut = _aio.run_coroutine_threadsafe(ch.fetch_message(m["message"]), b.loop)
+                    fut = _aio.run_coroutine_threadsafe(ch.fetch_message(m["message"]), disc.loop)
                     try:
                         msg = fut.result(timeout=10)
                         fut2 = _aio.run_coroutine_threadsafe(msg.delete(), b.loop)
@@ -161,18 +162,22 @@ Channel: {vchan.mention if vchan else '—'} · Role: {vrole.name if vrole else 
             rids = [int(r) for r in request.form.getlist("roles")][:25]
             ch_id = int(request.form.get("channel", 0))
             if rids and ch_id:
-                fut = _aio.run_coroutine_threadsafe(_make_menu(b, gid, ch_id, rids), b.loop)
-                try:
-                    fut.result(timeout=20)
-                except Exception as e:
-                    print("[dash] menu create failed:", e)
+                disc = _discord()
+                if disc:
+                    fut = _aio.run_coroutine_threadsafe(_make_menu(b, gid, ch_id, rids),
+                                                        disc.loop)
+                    try:
+                        fut.result(timeout=20)
+                    except Exception as e:
+                        print("[dash] menu create failed:", e)
         return redirect(f"/?key={request.args.get('key', '')}")
 
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    return app
 
 
 async def _make_menu(b, gid: int, channel_id: int, rids: list[int]):
-    g = b.get_guild(gid)
+    disc = getattr(b, "bot", b)
+    g = disc.get_guild(gid)
     ch = g.get_channel(channel_id) if g else None
     if not ch:
         return
@@ -196,3 +201,14 @@ async def _make_menu(b, gid: int, channel_id: int, rids: list[int]):
 def start():
     t = threading.Thread(target=run_thread, daemon=True)
     t.start()
+
+
+def run_thread():
+    if not DASHBOARD_KEY:
+        print("[dash] No DASHBOARD_KEY — dashboard disabled")
+        return
+    app = create_app()
+    if app is None:
+        print("[dash] Flask not installed — dashboard off (pip install flask)")
+        return
+    app.run(host="0.0.0.0", port=PORT, threaded=True)
