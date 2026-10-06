@@ -1,4 +1,4 @@
-"""Wigglesworth web dashboard — every feature, Carl-style.
+"""Wigglesworth web dashboard — premium dark UI, all features.
 
 Runs beside the bot on Railway. Guarded by DASHBOARD_KEY (?key=...).
 """
@@ -57,90 +57,91 @@ SECTIONS = [
 
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#08080f;color:#f1f1f6;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
-.bg{position:fixed;inset:0;z-index:-1;
-background:radial-gradient(600px 400px at 15% 0%,rgba(190,242,100,.13),transparent 60%),
-radial-gradient(700px 500px at 85% 10%,rgba(124,58,237,.35),transparent 60%),
-radial-gradient(800px 600px at 50% 100%,rgba(76,29,149,.5),transparent 65%),#08080f}
-.nav{position:sticky;top:0;z-index:5;backdrop-filter:blur(12px);background:rgba(8,8,15,.75);
-border-bottom:1px solid #23233a}
-.navin{max-width:1060px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.logo{font-weight:900;font-size:17px}
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-left:8px}
-.tabs a{color:#c9c9de;text-decoration:none;font-size:13px;padding:7px 14px;border-radius:20px;background:#17171f}
-.tabs a:hover{background:#fff;color:#111}
-.wrap{max-width:1060px;margin:0 auto;padding:18px 16px 40px}
-.hero h1{font-size:30px;font-weight:800;margin:14px 0 2px}
-.hero h1 span{color:#8f8f9e}.hero p{color:#8f8f9e;margin-bottom:14px}
-.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:14px 0}
-.stat{background:#101018;border:1px solid #23233a;border-radius:16px;padding:16px}
-.stat .n{font-size:26px;font-weight:800}.stat .l{color:#8f8f9e;font-size:12px;margin-top:4px}
-.stat .bar{height:8px;border-radius:6px;background:#23233a;margin-top:10px;overflow:hidden}
-.stat .bar i{display:block;height:100%;background:linear-gradient(90deg,#7c3aed,#22d3ee);border-radius:6px}
-.grid2{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}
-@media(max-width:760px){.grid2{grid-template-columns:1fr}}
-.card{background:#101018;border:1px solid #23233a;border-radius:16px;padding:16px;margin:12px 0}
-.card h2{font-size:17px;margin-bottom:2px}.card h3{margin:14px 0 6px;font-size:13px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.5px}
-.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid #1d1d2c}
-.row:first-of-type{border-top:0}.row label{font-size:14px}.row small{display:block;color:#8f8f9e;font-size:12px}
-button,select{background:#fff;color:#111;border:0;border-radius:20px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px}
-button:hover{filter:brightness(.92)}button.danger{background:#f43f5e;color:#fff}
-button.ok{background:#22c55e;color:#06240f}button.dim{background:#26263a;color:#eee}
+body{background:#0b0b14;color:#f2f2f8;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+.bg{position:fixed;inset:0;z-index:-1;animation:bgdrift 24s ease-in-out infinite alternate;
+background:radial-gradient(700px 420px at 12% -5%,rgba(190,242,100,.16),transparent 60%),
+radial-gradient(760px 520px at 88% 8%,rgba(124,58,237,.4),transparent 62%),
+radial-gradient(900px 640px at 50% 108%,rgba(76,29,149,.55),transparent 65%),#0b0b14}
+@keyframes bgdrift{from{transform:scale(1)}to{transform:scale(1.06)}}
+.shell{max-width:1120px;margin:22px auto;padding:0 18px 40px}
+.panel{background:#0a0a12;border:1px solid #23232f;border-radius:26px;padding:26px 26px 8px;
+box-shadow:0 30px 80px rgba(0,0,0,.55);animation:rise .5s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.topbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:9px;font-weight:900;font-size:17px}
+.brand .orb{width:26px;height:26px;border-radius:50%;
+background:conic-gradient(from 40deg,#a3e635,#7c3aed,#22d3ee,#a3e635);animation:spin 9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pills{display:flex;gap:7px;flex-wrap:wrap;margin-left:6px}
+.pills a{color:#b9b9cf;text-decoration:none;font-size:13px;padding:7px 15px;border-radius:20px;background:#17171f;transition:all .18s}
+.pills a:hover{background:#fff;color:#111;transform:translateY(-1px)}
+.pills a.hot{background:#fff;color:#111}
+.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap;margin:20px 2px 4px}
+.hero h1{font-size:31px;font-weight:800;letter-spacing:-.5px}
+.hero h1 span{color:#8b8b9e}.hero p{color:#8b8b9e;margin-top:4px;font-size:14px}
+.range{background:#17171f;border-radius:20px;padding:4px;display:flex;gap:4px}
+.range span{font-size:12px;color:#8b8b9e;padding:6px 14px;border-radius:16px}
+.range span.on{background:#26263a;color:#fff}
+.bignum{font-size:15px;color:#c9c9de}.bignum b{font-size:38px;color:#fff;letter-spacing:-1px}
+.bignum small{color:#22d3ee;font-size:13px;font-weight:700}
+.avail{font-size:13px;color:#8b8b9e;margin:8px 0 12px}.avail b{color:#fff}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:16px}
+@media(max-width:900px){.grid3{grid-template-columns:1fr}}
+.card{background:#121218;border:1px solid #22222f;border-radius:18px;padding:18px;margin:0;
+animation:rise .55s ease both}
+.card:nth-child(2){animation-delay:.07s}.card:nth-child(3){animation-delay:.14s}
+.card h2{font-size:15px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+.card h2 .x{color:#55556a;font-size:14px}
+.card h3{margin:16px 0 6px;font-size:12px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px}
+.legend{display:flex;gap:14px;font-size:12px;color:#8b8b9e;margin-bottom:8px}
+.dot{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:5px}
+.dot.g{background:#a3e635}.dot.p{background:#7c3aed}.dot.gr{background:#55556a}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid #1b1b27}
+.row:first-of-type{border-top:0}.row label{font-size:14px}.row small{display:block;color:#8b8b9e;font-size:12px}
+button,select{background:#fff;color:#111;border:0;border-radius:20px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px;transition:transform .15s}
+button:hover{transform:translateY(-1px)}button.danger{background:#f43f5e;color:#fff}
+button.ok{background:#22c55e;color:#06240f}
 select,input[type=text]{background:#17171f;color:#eee;border:1px solid #2c2c44;border-radius:8px;padding:8px}
 .badge{display:inline-block;border-radius:20px;padding:2px 12px;font-size:12px;font-weight:800}
 .on{background:rgba(34,197,94,.15);color:#4ade80}.off{background:rgba(244,63,94,.15);color:#fda4af}
 .pill{display:inline-block;background:#1d1d2e;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}
-.lb{display:flex;align-items:center;gap:10px;margin:8px 0}
-.lb .who{width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
-.lb .track{flex:1;height:10px;background:#23233a;border-radius:6px;overflow:hidden}
-.lb .fill{height:100%;background:linear-gradient(90deg,#a3e635,#7c3aed);border-radius:6px}
-.lb .xp{font-size:12px;color:#8f8f9e;min-width:70px;text-align:right}
-form{margin:0}.footer{text-align:center;color:#55556e;font-size:12px;padding:20px}
+.sec{margin-top:18px}
+.sechead{font-size:20px;font-weight:800;margin:6px 2px 0}
+.lb{display:flex;align-items:center;gap:10px;margin:9px 0}
+.lb .who{width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+.lb .track{flex:1;height:9px;background:#23232f;border-radius:6px;overflow:hidden}
+.lb .fill{height:100%;background:linear-gradient(90deg,#a3e635,#7c3aed);border-radius:6px;
+animation:fill 1s ease both}
+@keyframes fill{from{width:0}}
+.lb .xp{font-size:12px;color:#8b8b9e;min-width:74px;text-align:right}
+.txn{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #1b1b27;font-size:13px}
+.txn:first-of-type{border-top:0}.txn .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.txn .tag{font-size:11px;background:#1d1d2e;border-radius:12px;padding:2px 10px;color:#a5b4fc}
+.txn .amt{font-weight:800}.pos{color:#4ade80}.neg{color:#f87171}
+.heat{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-top:4px}
+.heat i{aspect-ratio:1.4;border-radius:5px;background:#23232f;animation:pop .4s ease both}
+@keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
+.heat i.l1{background:#2e1065}.heat i.l2{background:#5b21b6}.heat i.l3{background:#7c3aed}
+.heat i.l4{background:#a855f7}.heat i.l5{background:#c084fc}
+form{margin:0}.footer{text-align:center;color:#55556e;font-size:12px;padding:22px}
 """
 
 BASE = ("<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<title>Wigglesworth Panel</title><style>" + CSS + "</style></head>"
-        "<body><div class=bg></div>"
-        "<div class=nav><div class=navin><span class=logo>🛡️ Wigglesworth</span>"
-        "<span class=tabs><a href='#overview'>Overview</a><a href='#verify'>Verify</a>"
+        "<body><div class=bg></div><div class=shell><div class=panel>"
+        "<div class=topbar><span class=brand><span class=orb></span>Wigglesworth</span>"
+        "<span class=pills><a href='#overview'>Overview</a>"
+        "<a href='#verify' class=hot>Verify</a>"
         "<a href='#roles'>Roles</a><a href='#automod'>Automod</a>"
-        "<a href='#chat'>Chat</a><a href='#logs'>Logs</a></span></div></div>"
-        "<div class=wrap>%%BODY%%</div>"
-        "<div class=footer>Wigglesworth Bot · keep your ?key= secret</div></body></html>")
+        "<a href='#chat'>Chat</a><a href='#logs'>Logs</a></span></div>"
+        "%%BODY%%"
+        "</div><div class=footer>Wigglesworth Bot · keep your ?key= secret</div></div></body></html>")
 
 
-def _hero(guilds):
-    members = sum(len([m for m in g.members if not getattr(m, "bot", False)]) for g in guilds)
-    return (f"<div class=hero id=overview><h1>Welcome back, <span>boss</span></h1>"
-            f"<p>{len(guilds)} server(s) under protection.</p></div>"
-            f"<div class=statgrid>"
-            f"<div class=stat><div class=n>{members}</div><div class=l>Members watched</div>"
-            f"<div class=bar><i style='width:100%'></i></div></div>"
-            f"<div class=stat><div class=n>{len(guilds)}</div><div class=l>Servers</div>"
-            f"<div class=bar><i style='width:{min(len(guilds) * 20, 100)}%'></i></div></div>"
-            f"</div>")
-
-
-def _topboard(b, guild):
-    xp = getattr(b, "xp_data", {}).get(str(guild.id), {})
-    board = sorted(((int(v.get("xp", 0)), uid) for uid, v in xp.items()), reverse=True)[:5]
-    if not board:
-        return ""
-    top = max(board[0][0], 1)
-    rows = "".join(
-        f"<div class=lb><span class=who>{(guild.get_member(int(uid)).display_name if guild.get_member(int(uid)) else '—')}</span>"
-        f"<span class=track><span class=fill style='width:{int(xp_ * 100 / top)}%'></span></span>"
-        f"<span class=xp>{xp_:,} XP</span></div>" for xp_, uid in board)
-    return f"<div class=card><h2>🏆 XP Leaders</h2>{rows}</div>"
-
-
-SECTION_IDS = {"🛡️ Verification": "verify", "🎭 Reaction roles": "roles",
-               "🤖 Automod": "automod", "💬 Chatbot": "chat", "📝 Logging": "logs"}
-
-
-def _page(body: str, keyform: str = "") -> str:
-    return BASE.replace("%%BODY%%", (keyform + body if keyform else body))
+def _page(body: str) -> str:
+    return BASE.replace("%%BODY%%", body)
 
 
 def _role_opts(guild, current):
@@ -163,9 +164,8 @@ def _chan_opts(guild, current, voice=False):
 
 
 def _field(key, kind, label, guild, cfg, urlkey):
-    cur = cfg.get(key)
     if kind == "bool":
-        state = bool(cur)
+        state = bool(cfg.get(key))
         return (f"<div class=row><label>{label}<br><span class='badge {('on' if state else 'off')}'>"
                 f"{'ON' if state else 'OFF'}</span></label>"
                 f"<form method=post action='/api/config?key={urlkey}'>"
@@ -178,23 +178,24 @@ def _field(key, kind, label, guild, cfg, urlkey):
                 f"<form method=post action='/api/config?key={urlkey}'>"
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
-                f"<input type=text name=value value='{cur or ''}' size=6>"
+                f"<input type=text name=value value='{cfg.get(key) or ''}' size=6>"
                 f"<button>Save</button></form></div>")
     if kind == "role":
         return (f"<div class=row><label>{label}</label>"
                 f"<form method=post action='/api/config?key={urlkey}'>"
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
-                f"<select name=value>{_role_opts(guild, cur)}</select>"
+                f"<select name=value>{_role_opts(guild, cfg.get(key))}</select>"
                 f"<button>Save</button></form></div>")
     if kind == "channel":
         return (f"<div class=row><label>{label}</label>"
                 f"<form method=post action='/api/config?key={urlkey}'>"
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
-                f"<select name=value>{_chan_opts(guild, cur)}</select>"
+                f"<select name=value>{_chan_opts(guild, cfg.get(key))}</select>"
                 f"<button>Save</button></form></div>")
     if kind == "mood":
+        cur = cfg.get(key)
         opts = "".join(f"<option{' selected' if cur == m else ''}>{m}</option>"
                         for m in ("chill", "savage", "formal", "hype"))
         return (f"<div class=row><label>{label}</label>"
@@ -206,17 +207,22 @@ def _field(key, kind, label, guild, cfg, urlkey):
     return ""
 
 
-def _guild_card(guild, cfg, urlkey):
-    parts = [f"<div class=card><h2>🛡️ {guild.name}</h2>"]
+def _section(title, anchor, inner):
+    return (f"<div class=card id='{anchor}'><h2>{title}</h2>{inner}</div>" if inner else "")
+
+
+def _guild_block(guild, cfg, urlkey):
+    parts = [f"<h2 class=sechead style='font-size:22px;margin-top:20px'>{guild.name}</h2>"]
     for title, keys in SECTIONS:
-        anchor = SECTION_IDS.get(title, "")
-        parts.append(f"<h3 id='{anchor}'>{title}</h3>" if anchor else f"<h3>{title}</h3>")
-        for key in keys:
-            kind, label = SCHEMA[key]
-            parts.append(_field(key, kind, label, guild, cfg, urlkey))
+        anchor = {"🛡️ Verification": "verify", "🎭 Reaction roles": "roles",
+                  "🤖 Automod": "automod", "💬 Chatbot": "chat",
+                  "📝 Logging": "logs"}.get(title, "")
+        inner = "".join(_field(k, SCHEMA[k][0], SCHEMA[k][1], guild, cfg, urlkey)
+                        for k in keys)
         if title == "🎭 Reaction roles":
-            parts.append(_rolemenu_block(guild, urlkey))
-    parts.append("</div>")
+            inner += _rolemenu_block(guild, urlkey)
+        parts.append(f"<div class=card id='{anchor}'><h2>{title}</h2>{inner}</div>" if anchor
+                     else f"<div class=card><h2>{title}</h2>{inner}</div>")
     return "".join(parts)
 
 
@@ -228,7 +234,7 @@ def _rolemenu_block(guild, urlkey):
         ch = guild.get_channel(m.get("channel") or 0)
         rows.append(
             f"<div class=row><label>#{ch.name if ch else m.get('channel')} "
-            f"· {len(m.get('roles', []))} roles</label>"
+            f"<small>{len(m.get('roles', []))} roles</small></label>"
             f"<form method=post action='/api/rolemenu?key={urlkey}'>"
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='delete'>"
@@ -245,6 +251,93 @@ def _rolemenu_block(guild, urlkey):
             f"<input type=hidden name=action value='add'>"
             f"<select name=channel>{chans}</select><br>{roles}<br>"
             f"<button>➕ New menu</button></form>")
+
+
+def _hero(b, guilds):
+    members = sum(len([m for m in g.members if not getattr(m, "bot", False)]) for g in guilds)
+    xp_all = getattr(b, "xp_data", {})
+    total_xp = sum(int(v.get("xp", 0)) for gd in xp_all.values() for v in gd.values()
+                   if isinstance(v, dict))
+    earners = sum(1 for gd in xp_all.values() for v in gd.values()
+                  if isinstance(v, dict) and int(v.get("xp", 0)) > 0)
+    return (f"<div class=hero id=overview><div><h1>Welcome back, <span>boss</span></h1>"
+            f"<p>{len(guilds)} server(s) · all systems nominal.</p></div></div>"
+            f"<div class=bignum>Total XP floating around<b><br>${total_xp:,}</b> "
+            f"<small>+live</small></div>"
+            f"<div class=avail>Members watched: <b>{members}</b> · XP earners: <b>{earners}</b></div>"
+            f"<div class=btnrow><span class=pill>🛡️ Guard on</span>"
+            f"<span class=pill>💬 Chat on</span></div>")
+
+
+def _leaders(b, guild):
+    xp = getattr(b, "xp_data", {}).get(str(guild.id), {})
+    board = sorted(((int(v.get("xp", 0)), uid) for uid, v in xp.items()
+                    if isinstance(v, dict)), reverse=True)[:5]
+    if not board:
+        return ""
+    top = max(board[0][0], 1)
+    rows = "".join(
+        f"<div class=lb><span class=who>{(guild.get_member(int(uid)).display_name if guild.get_member(int(uid)) else '—')}</span>"
+        f"<span class=track><span class=fill style='width:{int(x * 100 / top)}%'></span></span>"
+        f"<span class=xp>{x:,} XP</span></div>" for x, uid in board)
+    return (f"<div class=card><h2>🏆 XP Leaders <span class=x>···</span></h2>"
+            f"<div class=legend><span><i class='dot g'></i>Top 5</span></div>{rows}</div>")
+
+
+def _health(b, guild, cfg):
+    v = bool(cfg.get("verify_enabled"))
+    am = bool(cfg.get("automod_invites"))
+    ch = bool(cfg.get("chat_enabled", True))
+    rows = [
+        ("Verification gate", "ON" if v else "OFF", v),
+        ("Invite filter", "ON" if am else "OFF", am),
+        ("Chatbot", "ON" if ch else "OFF", ch),
+    ]
+    body = "".join(
+        f"<div class=txn><span class=t>{label}</span>"
+        f"<span class='tag'>{state}</span>"
+        f"<span class='amt {'pos' if good else 'neg'}'>●</span></div>"
+        for label, state, good in rows)
+    return (f"<div class=card><h2>📊 Server health <span class=x>···</span></h2>"
+            f"<div class=legend><span><i class='dot g'></i>Live</span>"
+            f"<span><i class='dot gr'></i>Off</span></div>{body}</div>")
+
+
+def _weekheat(b, guilds):
+    import datetime as _dt
+    counts = [0] * 7
+    total = 0
+    for g in guilds:
+        xp = getattr(b, "xp_data", {}).get(str(g.id), {})
+        for v in xp.values():
+            if not isinstance(v, dict):
+                continue
+            last = float(v.get("last", 0))
+            if last > 0:
+                counts[_dt.datetime.fromtimestamp(last, tz=_dt.timezone.utc).weekday()] += 1
+                total += 1
+    if total == 0:
+        cells = "".join("<i></i>" for _ in range(42))
+        sub = "No activity yet — chat to light it up"
+    else:
+        levels = [min(int(c * 6 / max(counts)), 6) if max(counts) else 0 for c in counts]
+        cells = "".join(
+            f"<i class='l{min(lv - r, 5) if lv - r > 0 else 0}' "
+            f"style='animation-delay:{(ci * 6 + r) * .02:.2f}s'></i>"
+            if (lv - r) > 0 else "<i></i>"
+            for ci, lv in enumerate(levels) for r in range(5, -1, -1))
+        best = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][counts.index(max(counts))]
+        sub = f"Peak day: {best} · from real XP timestamps"
+    days = "".join(f"<span>{d}</span>" for d in ("M", "T", "W", "T", "F", "S", "S"))
+    grid = "<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:5px'>" + cells + "</div>"
+    return (f"<div class=card><h2>🌐 Weekly rhythm <span class=x>↗</span></h2>"
+            f"<div class=legend><span>{sub}</span></div>"
+            f"<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:5px;"
+            f"text-align:center;font-size:11px;color:#8b8b9e;margin-bottom:4px'>{days}</div>"
+            f"{grid}"
+            f"<div class=legend style='margin-top:6px'><span>Less</span>"
+            f"<span><i class='dot' style='background:#5b21b6'></i></span>"
+            f"<span><i class='dot' style='background:#a855f7'></i></span><span>More</span></div></div>")
 
 
 def create_app():
@@ -274,10 +367,16 @@ def create_app():
         glist = guilds()
         if not glist:
             return _page("No servers yet.")
-        boards = "".join(_topboard(b, g) for g in glist)
-        return _page(_hero(glist)
-                     + "".join(_guild_card(g, b.get_config(g.id), key) for g in glist)
-                     + boards)
+        body = _hero(b, glist)
+        body += "<div class=grid3>"
+        g0 = glist[0]
+        body += _health(b, g0, b.get_config(g0.id))
+        body += _leaders(b, g0)
+        body += _weekheat(b, glist)
+        body += "</div>"
+        for g in glist:
+            body += _guild_block(g, b.get_config(g.id), key)
+        return _page(body)
 
     @app.post("/api/config")
     def api_config():
@@ -304,17 +403,6 @@ def create_app():
             val = raw[:50]
         b.update_config(gid, **{name: val})
         return redirect(f"/?key={key}")
-
-    @app.post("/api/verify")
-    def api_verify():
-        if not _check(request.args.get("key", "")):
-            return "no", 401
-        b = _bot()
-        gid = int(request.form["guild"])
-        if request.form.get("action") == "toggle":
-            cfg = b.get_config(gid)
-            b.update_config(gid, verify_enabled=not bool(cfg.get("verify_enabled")))
-        return redirect(f"/?key={request.args.get('key', '')}")
 
     @app.post("/api/rolemenu")
     def api_rolemenu():
