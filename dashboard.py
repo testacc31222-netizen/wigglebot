@@ -56,38 +56,87 @@ SECTIONS = [
 ]
 
 CSS = """
-*{box-sizing:border-box}body{margin:0;background:#0f1117;color:#e6e9f5;
-font-family:'Segoe UI',system-ui,sans-serif}
-.top{background:linear-gradient(135deg,#6d28d9,#2563eb);padding:26px 20px;text-align:center}
-.top h1{margin:0;font-size:26px}.top p{margin:6px 0 0;opacity:.85}
-.wrap{max-width:900px;margin:0 auto;padding:16px}
-.card{background:#1a1d2e;border:1px solid #2b3050;border-radius:14px;padding:16px;margin:14px 0}
-.card h2{margin:0 0 4px;font-size:19px}.card h3{margin:14px 0 6px;font-size:15px;color:#a5b4fc}
-.row{display:flex;align-items:center;justify-content:space-between;gap:10px;
-padding:9px 0;border-top:1px solid #262b45}
-.row:first-of-type{border-top:0}
-.row label{font-size:14px}.row small{display:block;color:#8b93b8;font-size:12px}
-button,select{background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:8px 14px;
-font-weight:700;cursor:pointer;font-size:13px}
-button:hover{filter:brightness(1.15)}button.danger{background:#dc2645}
-button.ok{background:#16a34a}button.dim{background:#3a4060}
-select,input[type=text]{background:#0f1117;color:#eee;border:1px solid #3a4060}
-.badge{display:inline-block;border-radius:20px;padding:2px 12px;font-size:12px;font-weight:700}
-.on{background:#14532d;color:#86efac}.off{background:#3a2030;color:#fda4af}
-.pill{display:inline-block;background:#2b3050;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}
-.guildhead{display:flex;align-items:center;gap:10px}
-.dot{width:12px;height:12px;border-radius:50%;background:#22c55e}
-form{margin:0}
-.footer{text-align:center;color:#5b6285;font-size:12px;padding:20px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#08080f;color:#f1f1f6;font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+.bg{position:fixed;inset:0;z-index:-1;
+background:radial-gradient(600px 400px at 15% 0%,rgba(190,242,100,.13),transparent 60%),
+radial-gradient(700px 500px at 85% 10%,rgba(124,58,237,.35),transparent 60%),
+radial-gradient(800px 600px at 50% 100%,rgba(76,29,149,.5),transparent 65%),#08080f}
+.nav{position:sticky;top:0;z-index:5;backdrop-filter:blur(12px);background:rgba(8,8,15,.75);
+border-bottom:1px solid #23233a}
+.navin{max-width:1060px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.logo{font-weight:900;font-size:17px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-left:8px}
+.tabs a{color:#c9c9de;text-decoration:none;font-size:13px;padding:7px 14px;border-radius:20px;background:#17171f}
+.tabs a:hover{background:#fff;color:#111}
+.wrap{max-width:1060px;margin:0 auto;padding:18px 16px 40px}
+.hero h1{font-size:30px;font-weight:800;margin:14px 0 2px}
+.hero h1 span{color:#8f8f9e}.hero p{color:#8f8f9e;margin-bottom:14px}
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:14px 0}
+.stat{background:#101018;border:1px solid #23233a;border-radius:16px;padding:16px}
+.stat .n{font-size:26px;font-weight:800}.stat .l{color:#8f8f9e;font-size:12px;margin-top:4px}
+.stat .bar{height:8px;border-radius:6px;background:#23233a;margin-top:10px;overflow:hidden}
+.stat .bar i{display:block;height:100%;background:linear-gradient(90deg,#7c3aed,#22d3ee);border-radius:6px}
+.grid2{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}
+@media(max-width:760px){.grid2{grid-template-columns:1fr}}
+.card{background:#101018;border:1px solid #23233a;border-radius:16px;padding:16px;margin:12px 0}
+.card h2{font-size:17px;margin-bottom:2px}.card h3{margin:14px 0 6px;font-size:13px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.5px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid #1d1d2c}
+.row:first-of-type{border-top:0}.row label{font-size:14px}.row small{display:block;color:#8f8f9e;font-size:12px}
+button,select{background:#fff;color:#111;border:0;border-radius:20px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px}
+button:hover{filter:brightness(.92)}button.danger{background:#f43f5e;color:#fff}
+button.ok{background:#22c55e;color:#06240f}button.dim{background:#26263a;color:#eee}
+select,input[type=text]{background:#17171f;color:#eee;border:1px solid #2c2c44;border-radius:8px;padding:8px}
+.badge{display:inline-block;border-radius:20px;padding:2px 12px;font-size:12px;font-weight:800}
+.on{background:rgba(34,197,94,.15);color:#4ade80}.off{background:rgba(244,63,94,.15);color:#fda4af}
+.pill{display:inline-block;background:#1d1d2e;border-radius:12px;padding:3px 10px;margin:2px;font-size:13px}
+.lb{display:flex;align-items:center;gap:10px;margin:8px 0}
+.lb .who{width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+.lb .track{flex:1;height:10px;background:#23233a;border-radius:6px;overflow:hidden}
+.lb .fill{height:100%;background:linear-gradient(90deg,#a3e635,#7c3aed);border-radius:6px}
+.lb .xp{font-size:12px;color:#8f8f9e;min-width:70px;text-align:right}
+form{margin:0}.footer{text-align:center;color:#55556e;font-size:12px;padding:20px}
 """
 
 BASE = ("<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<title>Wigglesworth Panel</title><style>" + CSS + "</style></head>"
-        "<body><div class=top><h1>🛡️ Wigglesworth Panel</h1>"
-        "<p>Every feature. No commands needed.</p></div>"
+        "<body><div class=bg></div>"
+        "<div class=nav><div class=navin><span class=logo>🛡️ Wigglesworth</span>"
+        "<span class=tabs><a href='#overview'>Overview</a><a href='#verify'>Verify</a>"
+        "<a href='#roles'>Roles</a><a href='#automod'>Automod</a>"
+        "<a href='#chat'>Chat</a><a href='#logs'>Logs</a></span></div></div>"
         "<div class=wrap>%%BODY%%</div>"
         "<div class=footer>Wigglesworth Bot · keep your ?key= secret</div></body></html>")
+
+
+def _hero(guilds):
+    members = sum(len([m for m in g.members if not getattr(m, "bot", False)]) for g in guilds)
+    return (f"<div class=hero id=overview><h1>Welcome back, <span>boss</span></h1>"
+            f"<p>{len(guilds)} server(s) under protection.</p></div>"
+            f"<div class=statgrid>"
+            f"<div class=stat><div class=n>{members}</div><div class=l>Members watched</div>"
+            f"<div class=bar><i style='width:100%'></i></div></div>"
+            f"<div class=stat><div class=n>{len(guilds)}</div><div class=l>Servers</div>"
+            f"<div class=bar><i style='width:{min(len(guilds) * 20, 100)}%'></i></div></div>"
+            f"</div>")
+
+
+def _topboard(b, guild):
+    xp = getattr(b, "xp_data", {}).get(str(guild.id), {})
+    board = sorted(((int(v.get("xp", 0)), uid) for uid, v in xp.items()), reverse=True)[:5]
+    if not board:
+        return ""
+    top = max(board[0][0], 1)
+    rows = "".join(
+        f"<div class=lb><span class=who>{(guild.get_member(int(uid)).display_name if guild.get_member(int(uid)) else '—')}</span>"
+        f"<span class=track><span class=fill style='width:{int(xp_ * 100 / top)}%'></span></span>"
+        f"<span class=xp>{xp_:,} XP</span></div>" for xp_, uid in board)
+    return f"<div class=card><h2>🏆 XP Leaders</h2>{rows}</div>"
+
+
+SECTION_IDS = {"🛡️ Verification": "verify", "🎭 Reaction roles": "roles",
+               "🤖 Automod": "automod", "💬 Chatbot": "chat", "📝 Logging": "logs"}
 
 
 def _page(body: str, keyform: str = "") -> str:
@@ -158,10 +207,10 @@ def _field(key, kind, label, guild, cfg, urlkey):
 
 
 def _guild_card(guild, cfg, urlkey):
-    parts = [f"<div class=card><div class=guildhead><span class=dot></span>"
-             f"<h2>{guild.name}</h2></div>"]
+    parts = [f"<div class=card><h2>🛡️ {guild.name}</h2>"]
     for title, keys in SECTIONS:
-        parts.append(f"<h3>{title}</h3>")
+        anchor = SECTION_IDS.get(title, "")
+        parts.append(f"<h3 id='{anchor}'>{title}</h3>" if anchor else f"<h3>{title}</h3>")
         for key in keys:
             kind, label = SCHEMA[key]
             parts.append(_field(key, kind, label, guild, cfg, urlkey))
@@ -222,8 +271,13 @@ def create_app():
                          "<form><input type=text name=key>"
                          "<button>Open</button></form></div>"), 401
         b = _bot()
-        cards = "".join(_guild_card(g, b.get_config(g.id), key) for g in guilds())
-        return _page(cards or "No servers yet.")
+        glist = guilds()
+        if not glist:
+            return _page("No servers yet.")
+        boards = "".join(_topboard(b, g) for g in glist)
+        return _page(_hero(glist)
+                     + "".join(_guild_card(g, b.get_config(g.id), key) for g in glist)
+                     + boards)
 
     @app.post("/api/config")
     def api_config():
