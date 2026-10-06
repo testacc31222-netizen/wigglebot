@@ -47,11 +47,23 @@ SCHEMA: dict[str, tuple[str, str]] = {
     "bot_mood": ("mood", "Chatbot mood"),
     "autoreact": ("bool", "Auto reactions"),
     "qotd_channel_id": ("channel", "Question-of-the-day channel"),
+    "join_threshold_count": ("int", "Raid: joins to trigger"),
+    "join_threshold_seconds": ("int", "Raid: within seconds"),
+    "raid_action": ("action", "Raid response"),
+    "lockdown_duration_minutes": ("int", "Auto-unlock minutes (0 = manual)"),
+    "new_account_age_days": ("int", "Flag accounts younger than (days)"),
+    "timeout_duration_minutes": ("int", "Mute length minutes"),
 }
 
 SECTIONS = [
     ("🛡️ Verification", ["verify_enabled", "verified_role_id"]),
     ("🎭 Reaction roles", []),
+    ("🚨 Raid guard", ["join_threshold_count", "join_threshold_seconds", "raid_action",
+                       "lockdown_duration_minutes", "new_account_age_days",
+                       "timeout_duration_minutes"]),
+    ("🔐 Lockdown", []),
+    ("📋 Whitelist", []),
+    ("🧹 Mod actions", []),
     ("👋 Welcome", ["welcome_channel_id", "goodbye_channel_id"]),
     ("📝 Logging", ["log_channel_id"]),
     ("🤖 Automod", ["automod_invites", "automod_links", "automod_max_mentions",
@@ -140,8 +152,8 @@ BASE = ("<!doctype html><html><head><meta charset=utf-8>"
         "<body><div class=bg></div><div class=shell><div class=panel>"
         "<div class=topbar><span class=brand><span class=orb></span>Wigglesworth</span>"
         "<span class=pills><a href='#overview'>Overview</a>"
-        "<a href='#verify' class=hot>Verify</a>"
-        "<a href='#roles'>Roles</a><a href='#automod'>Automod</a>"
+        "<a href='#verify'>Verify</a>"
+        "<a href='#roles'>Roles</a><a href='#raid'>Raid</a><a href='#automod'>Automod</a>"
         "<a href='#chat'>Chat</a><a href='#logs'>Logs</a></span></div>"
         "%%BODY%%"
         "</div><div class=footer>Wigglesworth Bot · keep your ?key= secret</div></div></body></html>")
@@ -219,7 +231,24 @@ def _field(key, kind, label, guild, cfg, urlkey):
                 f"<input type=hidden name=key value={key}>"
                 f"<select name=value>{opts}</select>"
                 f"<button>Save</button></form></div>")
+    if kind == "action":
+        cur = cfg.get(key)
+        opts = "".join(f"<option{' selected' if cur == a else ''}>{a}</option>"
+                        for a in ("kick", "ban", "timeout", "none"))
+        return (f"<div class=row><label>{label}</label>"
+                f"<form method=post action='/api/config?key={urlkey}'>"
+                f"<input type=hidden name=guild value={guild.id}>"
+                f"<input type=hidden name=key value={key}>"
+                f"<select name=value>{opts}</select>"
+                f"<button>Save</button></form></div>")
     return ""
+
+
+SECTION_IDS = {"🛡️ Verification": "verify", "🎭 Reaction roles": "roles",
+               "🚨 Raid guard": "raid", "🔐 Lockdown": "raid",
+               "🤖 Automod": "automod", "💬 Chatbot": "chat",
+               "📝 Logging": "logs", "🧹 Mod actions": "logs",
+               "📋 Whitelist": "raid"}
 
 
 def _section(title, anchor, inner):
@@ -229,16 +258,68 @@ def _section(title, anchor, inner):
 def _guild_block(guild, cfg, urlkey):
     parts = [f"<h2 class=sechead style='font-size:22px;margin-top:20px'>{guild.name}</h2>"]
     for title, keys in SECTIONS:
-        anchor = {"🛡️ Verification": "verify", "🎭 Reaction roles": "roles",
-                  "🤖 Automod": "automod", "💬 Chatbot": "chat",
-                  "📝 Logging": "logs"}.get(title, "")
+        anchor = SECTION_IDS.get(title, "")
         inner = "".join(_field(k, SCHEMA[k][0], SCHEMA[k][1], guild, cfg, urlkey)
                         for k in keys)
         if title == "🎭 Reaction roles":
             inner += _rolemenu_block(guild, urlkey)
+        elif title == "🔐 Lockdown":
+            inner += _lockdown_block(guild, urlkey)
+        elif title == "📋 Whitelist":
+            inner += _whitelist_block(guild, cfg, urlkey)
+        elif title == "🧹 Mod actions":
+            inner += _mod_block(guild, urlkey)
         parts.append(f"<div class=card id='{anchor}'><h2>{title}</h2>{inner}</div>" if anchor
                      else f"<div class=card><h2>{title}</h2>{inner}</div>")
     return "".join(parts)
+
+
+def _lockdown_block(guild, urlkey):
+    return (f"<div class=row><label>Lock every text channel NOW</label>"
+            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='lockdown'>"
+            f"<button class=danger>🔒 LOCKDOWN</button></form></div>"
+            f"<div class=row><label>Restore channels</label>"
+            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='unlock'>"
+            f"<button class=ok>🔓 Unlock</button></form></div>")
+
+
+def _whitelist_block(guild, cfg, urlkey):
+    users = cfg.get("whitelisted_user_ids", []) or []
+    rows = "".join(
+        f"<div class=row><label><code>{uid}</code></label>"
+        f"<form method=post action='/api/whitelist?key={urlkey}'>"
+        f"<input type=hidden name=guild value={guild.id}>"
+        f"<input type=hidden name=action value='remove'>"
+        f"<input type=hidden name=user_id value={uid}>"
+        f"<button class=danger>Remove</button></form></div>" for uid in users)
+    return ((rows or "<p><small>Empty — raiders beware.</small></p>")
+            + f"<form method=post action='/api/whitelist?key={urlkey}'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='add'>"
+            f"<input type=text name=user_id placeholder='Discord user ID' size=20>"
+            f"<button>➕ Whitelist</button></form>")
+
+
+def _mod_block(guild, urlkey):
+    chans = "".join(f"<option value={c.id}>#{c.name}</option>" for c in guild.text_channels[:25])
+    return (f"<div class=row><label>Bulk delete</label>"
+            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='purge'>"
+            f"<select name=channel>{chans}</select>"
+            f"<input type=text name=count value='20' size=4>"
+            f"<button class=danger>Purge</button></form></div>"
+            f"<div class=row><label>Slowmode (0 = off)</label>"
+            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='slowmode'>"
+            f"<select name=channel>{chans}</select>"
+            f"<input type=text name=count value='5' size=4>"
+            f"<button>Set</button></form></div>")
 
 
 def _rolemenu_block(guild, urlkey):
@@ -457,6 +538,75 @@ def create_app():
                     fut.result(timeout=20)
                 except Exception as e:
                     print("[dash] menu create failed:", e)
+        return redirect(f"/?key={request.args.get('key', '')}")
+
+    @app.post("/api/whitelist")
+    def api_whitelist():
+        if not _check(request.args.get("key", "")):
+            return "no", 401
+        b = _bot()
+        gid = int(request.form["guild"])
+        cfg = b.get_config(gid)
+        users = list(cfg.get("whitelisted_user_ids", []) or [])
+        if request.form.get("action") == "add":
+            try:
+                uid = int(request.form.get("user_id", "").strip("<>@#!& "))
+            except ValueError:
+                return redirect(f"/?key={request.args.get('key', '')}")
+            if uid and uid not in users:
+                users.append(uid)
+        else:
+            try:
+                uid = int(request.form.get("user_id", 0))
+            except ValueError:
+                uid = 0
+            if uid in users:
+                users.remove(uid)
+        b.update_config(gid, whitelisted_user_ids=users)
+        return redirect(f"/?key={request.args.get('key', '')}")
+
+    @app.post("/api/mod")
+    def api_mod():
+        if not _check(request.args.get("key", "")):
+            return "no", 401
+        import asyncio as _aio
+        b = _bot()
+        disc = _disc()
+        gid = int(request.form["guild"])
+        action = request.form.get("action")
+        if not disc:
+            return redirect(f"/?key={request.args.get('key', '')}")
+        g = disc.get_guild(gid)
+        if not g:
+            return redirect(f"/?key={request.args.get('key', '')}")
+
+        async def _do():
+            if action == "lockdown":
+                await b.lockdown_guild(g, reason="dashboard lockdown")
+            elif action == "unlock":
+                await b.unlock_guild(g, reason="dashboard unlock")
+            elif action == "purge":
+                ch = g.get_channel(int(request.form.get("channel", 0)))
+                n = max(1, min(100, int(request.form.get("count", 20) or 20)))
+                if ch:
+                    try:
+                        await ch.purge(limit=n)
+                    except Exception:
+                        pass
+            elif action == "slowmode":
+                ch = g.get_channel(int(request.form.get("channel", 0)))
+                n = max(0, min(21600, int(request.form.get("count", 0) or 0)))
+                if ch:
+                    try:
+                        await ch.edit(slowmode_delay=n, reason="dashboard slowmode")
+                    except Exception:
+                        pass
+
+        try:
+            fut = _aio.run_coroutine_threadsafe(_do(), disc.loop)
+            fut.result(timeout=30)
+        except Exception as e:
+            print("[dash] mod action failed:", e)
         return redirect(f"/?key={request.args.get('key', '')}")
 
     return app
