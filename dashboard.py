@@ -42,7 +42,7 @@ SCHEMA: dict[str, tuple[str, str]] = {
     "automod_max_emoji": ("int", "Max emojis per message"),
     "automod_words": ("words", "Banned words (comma separated)"),
     "link_allowed_channels": ("channellist", "Link-safe channels"),
-    "lobby_channel_id": ("channel", "Join-to-create VC"),
+    "lobby_channel_id": ("voice", "Join-to-create VC"),
     "chat_channel_id": ("channel", "Bot chat channel (blank = anywhere)"),
     "chat_enabled": ("bool", "Chatbot replies"),
     "bot_mood": ("mood", "Chatbot mood"),
@@ -237,6 +237,13 @@ def _field(key, kind, label, guild, cfg, urlkey):
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
                 f"<select name=value>{_chan_opts(guild, cfg.get(key))}</select>"
+                f"<button>Save</button></form></div>")
+    if kind == "voice":
+        return (f"<div class=row><label>{label}</label>"
+                f"<form method=post action='/api/config?key={urlkey}'>"
+                f"<input type=hidden name=guild value={guild.id}>"
+                f"<input type=hidden name=key value={key}>"
+                f"<select name=value>{_chan_opts(guild, cfg.get(key), voice=True)}</select>"
                 f"<button>Save</button></form></div>")
     if kind == "mood":
         cur = cfg.get(key)
@@ -515,7 +522,7 @@ def create_app():
                 val = int(raw)
             except ValueError:
                 return redirect(f"/?key={key}")
-        elif kind in ("channel", "role"):
+        elif kind in ("channel", "role", "voice"):
             val = int(raw) if raw.isdigit() else None
         elif kind == "words":
             val = [x.strip().lower() for x in raw.split(",") if x.strip()][:100]
