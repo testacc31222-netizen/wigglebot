@@ -33,10 +33,17 @@ OWNER_IDS = _owner_ids()
 bot_enabled = True
 
 BASE_DIR = Path(__file__).parent
-DATA_FILE = BASE_DIR / "guild_config.json"
-XP_FILE = BASE_DIR / "xp.json"
-AFK_FILE = BASE_DIR / "afk.json"
-RR_FILE = BASE_DIR / "rolemenus.json"
+# Persistent data dir: set DATA_DIR=/app/data on Railway + attach a Volume there,
+# otherwise redeploys wipe guild_config.json/xp.json (settings "forget" themselves).
+DATA_DIR = Path(os.getenv("DATA_DIR", "") or BASE_DIR)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
+DATA_FILE = DATA_DIR / "guild_config.json"
+XP_FILE = DATA_DIR / "xp.json"
+AFK_FILE = DATA_DIR / "afk.json"
+RR_FILE = DATA_DIR / "rolemenus.json"
 
 
 def _load_rr() -> dict:
@@ -983,8 +990,8 @@ def owner_only():
 
 # ---------- talker pack: teach / mood / trivia / story / fun / react / catchup / tr / qotd ----------
 
-TEACH_FILE = BASE_DIR / "teach.json"
-STORY_FILE = BASE_DIR / "stories.json"
+TEACH_FILE = DATA_DIR / "teach.json"
+STORY_FILE = DATA_DIR / "stories.json"
 
 
 def _load_json(p: Path) -> dict:
