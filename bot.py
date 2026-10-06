@@ -2272,6 +2272,9 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
     vc = guild.voice_client
     if not vc or not vc.channel:
         return "not in voice — `.vcjoin` first"
+    import shutil as _sh
+    if not _sh.which("ffmpeg"):
+        return "no ffmpeg on this host — redeploy so nixpacks.toml installs it"
     clean = _re.sub(r"[*_~>|`]", "", text)[:300] or "hello"
     try:
         import edge_tts
@@ -2283,8 +2286,15 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
         await edge_tts.Communicate(clean, voice="en-US-AriaNeural").save(tmp.name)
         while vc.is_playing():
             await asyncio.sleep(0.5)
-        vc.play(discord.FFmpegPCMAudio(tmp.name),
-                after=lambda e: __import__("os").remove(tmp.name) if __import__("os").path.exists(tmp.name) else None)
+        try:
+            vc.play(discord.FFmpegPCMAudio(tmp.name),
+                    after=lambda e: __import__("os").remove(tmp.name) if __import__("os").path.exists(tmp.name) else None)
+        except discord.ClientException:
+            try:
+                __import__("os").remove(tmp.name)
+            except OSError:
+                pass
+            return "already playing — wait a sec, or the voice link died (rejoin with `.vcjoin`)"
         return "speaking"
     except Exception as exc:
         return f"voice failed: {type(exc).__name__}"
