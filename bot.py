@@ -155,7 +155,8 @@ DEFAULT_GUILD_CONFIG = {
     "bot_mood": "chill",
     "autoreact": True,
     "chat_enabled": True,
-    "qotd_channel_id": None,    "verify_channel_id": None,
+    "qotd_channel_id": None,
+    "voice_auto": False,        # speak AI replies aloud when sitting in VC    "verify_channel_id": None,
     "verified_role_id": None,
     "verify_enabled": False,
     "welcome_channel_id": None,
@@ -970,6 +971,8 @@ async def chat_reply(message: discord.Message) -> None:
             await message.reply(answer[:1900], mention_author=False)
         except (discord.Forbidden, discord.HTTPException):
             await message.channel.send(answer[:1900])
+        if get_config(message.guild.id).get("voice_auto", False):
+            await speak_text(message.guild, answer[:300])
     except (discord.Forbidden, discord.HTTPException):
         pass
     except Exception as exc:
@@ -2262,6 +2265,55 @@ async def cmd_vcjoin(ctx: commands.Context, channel: str = "") -> None:
         await ctx.send(f"❌ Can't join (need Connect perm): {exc}")
 
 
+async def speak_text(guild: discord.Guild, text: str) -> str:
+    """Play TTS in the bot's current VC. Returns status for logs/errors."""
+    import re as _re
+    import tempfile as _tf
+    vc = guild.voice_client
+    if not vc or not vc.channel:
+        return "not in voice — `.vcjoin` first"
+    clean = _re.sub(r"[*_~>|`]", "", text)[:300] or "hello"
+    try:
+        import edge_tts
+    except ImportError:
+        return "voice engine missing (pip install edge-tts)"
+    try:
+        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tmp.close()
+        await edge_tts.Communicate(clean, voice="en-US-AriaNeural").save(tmp.name)
+        while vc.is_playing():
+            await asyncio.sleep(0.5)
+        vc.play(discord.FFmpegPCMAudio(tmp.name),
+                after=lambda e: __import__("os").remove(tmp.name) if __import__("os").path.exists(tmp.name) else None)
+        return "speaking"
+    except Exception as exc:
+        return f"voice failed: {type(exc).__name__}"
+
+
+@bot.command(name="speak")
+async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
+    """Bot says it out loud in VC. Usage: .speak <text>"""
+    if not text:
+        await ctx.send(f"Usage: `{PREFIX}speak <text>` (join a VC with `.vcjoin` first)")
+        return
+    status = await speak_text(ctx.guild, text)
+    if status != "speaking":
+        await ctx.send(f"🔇 {status}")
+
+
+@bot.command(name="voiceauto")
+@owner_or_admin()
+async def cmd_voiceauto(ctx: commands.Context, state: str = "") -> None:
+    """Speak ping replies aloud when in VC. Usage: .voiceauto <on|off>"""
+    state = state.lower().strip()
+    if state in ("on", "off"):
+        update_config(ctx.guild.id, voice_auto=(state == "on"))
+        await ctx.send(f"🔊 Voice replies **{state.upper()}**.")
+    else:
+        cur = get_config(ctx.guild.id).get("voice_auto", False)
+        await ctx.send(f"Voice replies: **{'ON' if cur else 'OFF'}**. `.voiceauto on|off`.")
+
+
 @bot.command(name="vcleave")
 @owner_or_admin()
 async def cmd_vcleave(ctx: commands.Context) -> None:
@@ -2769,6 +2821,7 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_setlobby.error
 @cmd_vcjoin.error
 @cmd_vcleave.error
+@cmd_voiceauto.error
 @cmd_whitelist.error
 @cmd_say.error
 @cmd_explode.error
@@ -2802,7 +2855,8 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "rolemenu", "teach", "unteach", "mood",
                                                      "setqotd", "chaton", "chatoff", "explode",
                                                      "ticketsetup", "setwelcome", "setgoodbye",
-                                                     "linkchannel", "vcjoin", "vcleave"):
+                                                     "linkchannel", "vcjoin", "vcleave",
+                                                     "voiceauto"):
             await ctx.send("❌ Bot owner or server admin only.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
