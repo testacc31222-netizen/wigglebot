@@ -2274,12 +2274,17 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
         return "not in voice — `.vcjoin` first"
     import shutil as _sh
     if not _sh.which("ffmpeg"):
-        return "no ffmpeg on this host — redeploy so nixpacks.toml installs it"
+        try:
+            import imageio_ffmpeg  # noqa
+        except ImportError:
+            return "no ffmpeg on this host — redeploy so requirements install"
     clean = _re.sub(r"[*_~>|`]", "", text)[:300] or "hello"
     try:
         import edge_tts
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     except ImportError:
-        return "voice engine missing (pip install edge-tts)"
+        return "voice engine missing — redeploy so requirements install"
     try:
         tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
         tmp.close()
@@ -2287,7 +2292,7 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
         while vc.is_playing():
             await asyncio.sleep(0.5)
         try:
-            vc.play(discord.FFmpegPCMAudio(tmp.name),
+            vc.play(discord.FFmpegPCMAudio(tmp.name, executable=ffmpeg_exe),
                     after=lambda e: __import__("os").remove(tmp.name) if __import__("os").path.exists(tmp.name) else None)
         except discord.ClientException:
             try:
