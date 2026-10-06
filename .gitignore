@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+_check.py
+_set*.py
+_strip*.py
+_patch.py
