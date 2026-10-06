@@ -5,3 +5,10 @@ _check.py
 _set*.py
 _strip*.py
 _patch.py
+
+guild_config.json
+xp.json
+afk.json
+teach.json
+stories.json
+rolemenus.json

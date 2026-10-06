@@ -71,6 +71,7 @@ SECTIONS = [
                     "automod_spam", "automod_caps", "automod_emoji", "automod_max_emoji",
                     "automod_words", "link_allowed_channels"]),
     ("🔊 Voice lobby", ["lobby_channel_id"]),
+    ("🎧 Voice presence", []),
     ("💬 Chatbot", ["chat_enabled", "chat_channel_id", "bot_mood", "autoreact"]),
     ("❓ Daily question", ["qotd_channel_id"]),
 ]
@@ -287,6 +288,8 @@ def _guild_block(guild, cfg, urlkey):
                         for k in keys)
         if title == "🎭 Reaction roles":
             inner += _rolemenu_block(guild, urlkey)
+        if title == "🎧 Voice presence":
+            inner += _voice_block(guild, cfg, urlkey)
         elif title == "🔐 Lockdown":
             inner += _lockdown_block(guild, urlkey)
         elif title == "📋 Whitelist":
@@ -344,6 +347,26 @@ def _mod_block(guild, urlkey):
             f"<select name=channel>{chans}</select>"
             f"<input type=text name=count value='5' size=4>"
             f"<button>Set</button></form></div>")
+
+
+def _voice_block(guild, cfg, urlkey):
+    b = _bot()
+    disc = getattr(b, "bot", None) if b else None
+    vc = disc.get_guild(guild.id).voice_client if disc and disc.get_guild(guild.id) else None
+    current = f"#{vc.channel.name}" if vc and vc.channel else "not in voice"
+    vcs = "".join(f"<option value={c.id}>🔊 {c.name}</option>"
+                  for c in guild.voice_channels[:25])
+    return (f"<div class=row><label>Now: <b>{current}</b></label>"
+            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='vcleave'>"
+            f"<button class=dim>Leave</button></form></div>"
+            f"<div class=row><label>Join a VC</label>"
+            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='vcjoin'>"
+            f"<select name=channel>{vcs}</select>"
+            f"<button>Join</button></form></div>")
 
 
 def _rolemenu_block(guild, urlkey):
@@ -612,12 +635,18 @@ def create_app():
             return redirect(f"/?key={request.args.get('key', '')}")
 
         async def _do():
+            def _cid() -> int:
+                try:
+                    return int(request.form.get("channel", 0))
+                except (ValueError, TypeError):
+                    return 0
+
             if action == "lockdown":
                 await b.lockdown_guild(g, reason="dashboard lockdown")
             elif action == "unlock":
                 await b.unlock_guild(g, reason="dashboard unlock")
             elif action == "purge":
-                ch = g.get_channel(int(request.form.get("channel", 0)))
+                ch = g.get_channel(_cid())
                 n = max(1, min(100, int(request.form.get("count", 20) or 20)))
                 if ch:
                     try:
@@ -625,13 +654,32 @@ def create_app():
                     except Exception:
                         pass
             elif action == "slowmode":
-                ch = g.get_channel(int(request.form.get("channel", 0)))
+                ch = g.get_channel(_cid())
                 n = max(0, min(21600, int(request.form.get("count", 0) or 0)))
                 if ch:
                     try:
                         await ch.edit(slowmode_delay=n, reason="dashboard slowmode")
                     except Exception:
                         pass
+            elif action == "vcjoin":
+                ch = g.get_channel(_cid())
+                if ch:
+                    try:
+                        vc = g.voice_client
+                        if vc:
+                            await vc.move_to(ch)
+                        else:
+                            await ch.connect()
+                        b.update_config(gid, mod_vc_channel_id=ch.id)
+                    except Exception as e:
+                        print("[dash] vcjoin failed:", e)
+            elif action == "vcleave":
+                try:
+                    if g.voice_client:
+                        await g.voice_client.disconnect()
+                    b.update_config(gid, mod_vc_channel_id=None)
+                except Exception:
+                    pass
 
         try:
             fut = _aio.run_coroutine_threadsafe(_do(), disc.loop)
