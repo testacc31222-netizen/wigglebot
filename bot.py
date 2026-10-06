@@ -142,6 +142,7 @@ DEFAULT_GUILD_CONFIG = {
     "automod_emoji": True,      # 8+ emojis = delete
     "automod_max_emoji": 8,
     "automod_words": [],        # banned words/phrases (lowercase match)
+    "link_allowed_channels": [],  # links+invites allowed here (partners)
     "lobby_channel_id": None,   # join-to-create voice channel
     "chat_channel_id": None,    # bot chat only here when set
     "bot_mood": "chill",
@@ -1414,9 +1415,10 @@ async def automod_check(message: discord.Message) -> bool:
     content = message.content or ""
     invite_re, link_re = _regexes()
     reason = ""
-    if cfg.get("automod_invites") and invite_re.search(content):
+    link_free = message.channel.id in (cfg.get("link_allowed_channels", []) or [])
+    if cfg.get("automod_invites") and not link_free and invite_re.search(content):
         reason = "discord invites aren't allowed here"
-    elif cfg.get("automod_links") and link_re.search(content):
+    elif cfg.get("automod_links") and not link_free and link_re.search(content):
         reason = "links aren't allowed here"
     elif len(message.mentions) + len(message.role_mentions) > int(cfg.get("automod_max_mentions", 5)):
         reason = f"too many mentions (max {cfg.get('automod_max_mentions', 5)})"
@@ -2145,6 +2147,33 @@ async def cmd_setgoodbye(ctx: commands.Context, channel: str = "") -> None:
     await ctx.send(f"👋 Goodbyes go to {target.mention}.")
 
 
+@bot.command(name="linkchannel")
+@owner_or_admin()
+async def cmd_linkchannel(ctx: commands.Context, channel: str = "") -> None:
+    """Toggle a link-safe channel. Usage: .linkchannel [#channel] (blank = list)"""
+    cfg = get_config(ctx.guild.id)
+    ids = list(cfg.get("link_allowed_channels", []) or [])
+    if not channel:
+        names = [f"<#{i}>" for i in ids] or ["none — links filtered everywhere"]
+        await ctx.send("Link-safe channels: " + ", ".join(names))
+        return
+    try:
+        target = ctx.guild.get_channel(int(channel.strip("<#>")))
+    except ValueError:
+        target = None
+    if target is None or not isinstance(target, discord.TextChannel):
+        await ctx.send(f"Usage: `{PREFIX}linkchannel #channel`")
+        return
+    if target.id in ids:
+        ids.remove(target.id)
+        msg = f"🔒 {target.mention} filters links again."
+    else:
+        ids.append(target.id)
+        msg = f"🔓 {target.mention} is now link-safe (invites + links allowed)."
+    update_config(ctx.guild.id, link_allowed_channels=ids)
+    await ctx.send(msg)
+
+
 @bot.command(name="setlog")
 @owner_or_admin()
 async def cmd_setlog(ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
@@ -2662,6 +2691,7 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_config.error
 @cmd_setlog.error
 @cmd_setchat.error
+@cmd_linkchannel.error
 @cmd_setwelcome.error
 @cmd_setgoodbye.error
 @cmd_rolemenu.error
@@ -2702,7 +2732,8 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "verifysetup", "verifyoff", "aitest",
                                                      "rolemenu", "teach", "unteach", "mood",
                                                      "setqotd", "chaton", "chatoff", "explode",
-                                                     "ticketsetup", "setwelcome", "setgoodbye"):
+                                                     "ticketsetup", "setwelcome", "setgoodbye",
+                                                     "linkchannel"):
             await ctx.send("❌ Bot owner or server admin only.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")

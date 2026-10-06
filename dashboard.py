@@ -41,6 +41,7 @@ SCHEMA: dict[str, tuple[str, str]] = {
     "automod_emoji": ("bool", "Emoji-spam filter"),
     "automod_max_emoji": ("int", "Max emojis per message"),
     "automod_words": ("words", "Banned words (comma separated)"),
+    "link_allowed_channels": ("channellist", "Link-safe channels"),
     "lobby_channel_id": ("channel", "Join-to-create VC"),
     "chat_channel_id": ("channel", "Bot chat channel (blank = anywhere)"),
     "chat_enabled": ("bool", "Chatbot replies"),
@@ -68,7 +69,7 @@ SECTIONS = [
     ("📝 Logging", ["log_channel_id"]),
     ("🤖 Automod", ["automod_invites", "automod_links", "automod_max_mentions",
                     "automod_spam", "automod_caps", "automod_emoji", "automod_max_emoji",
-                    "automod_words"]),
+                    "automod_words", "link_allowed_channels"]),
     ("🔊 Voice lobby", ["lobby_channel_id"]),
     ("💬 Chatbot", ["chat_enabled", "chat_channel_id", "bot_mood", "autoreact"]),
     ("❓ Daily question", ["qotd_channel_id"]),
@@ -169,7 +170,7 @@ def _role_opts(guild, current):
         if r.is_default() or r.managed:
             continue
         sel = " selected" if current == r.id else ""
-        out.append(f"<option value={r.id}{sel}>{r.name}</option>")
+        out.append(f"<option value={r.id}{sel}>{_esc(r.name)}</option>")
     return "".join(out)
 
 
@@ -178,8 +179,13 @@ def _chan_opts(guild, current, voice=False):
     chans = guild.voice_channels if voice else guild.text_channels
     for c in chans[:30]:
         sel = " selected" if current == c.id else ""
-        out.append(f"<option value={c.id}{sel}>#{c.name}</option>")
+        out.append(f"<option value={c.id}{sel}>#{_esc(c.name)}</option>")
     return "".join(out)
+
+
+def _esc(s) -> str:
+    import html as _h
+    return _h.escape(str(s if s is not None else ""), quote=True)
 
 
 def _field(key, kind, label, guild, cfg, urlkey):
@@ -197,7 +203,7 @@ def _field(key, kind, label, guild, cfg, urlkey):
                 f"<form method=post action='/api/config?key={urlkey}'>"
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
-                f"<input type=text name=value value='{cfg.get(key) or ''}' size=6>"
+                f"<input type=text name=value value='{_esc(cfg.get(key) or '')}' size=6>"
                 f"<button>Save</button></form></div>")
     if kind == "words":
         cur = ", ".join(cfg.get(key) or [])
@@ -205,8 +211,19 @@ def _field(key, kind, label, guild, cfg, urlkey):
                 f"<form method=post action='/api/config?key={urlkey}'>"
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
-                f"<input type=text name=value value='{cur}' size=24>"
+                f"<input type=text name=value value='{_esc(cur)}' size=24>"
                 f"<button>Save</button></form></div>")
+    if kind == "channellist":
+        cur = set(cfg.get(key) or [])
+        boxes = "".join(
+            f"<label class=pill><input type=checkbox name=value value={c.id}"
+            f"{' checked' if c.id in cur else ''}> #{_esc(c.name)}</label>"
+            for c in guild.text_channels[:30])
+        return (f"<div class=row><label>{label}</label>"
+                f"<form method=post action='/api/config?key={urlkey}'>"
+                f"<input type=hidden name=guild value={guild.id}>"
+                f"<input type=hidden name=key value={key}>"
+                f"{boxes}<br><button>Save</button></form></div>")
     if kind == "role":
         return (f"<div class=row><label>{label}</label>"
                 f"<form method=post action='/api/config?key={urlkey}'>"
@@ -256,7 +273,7 @@ def _section(title, anchor, inner):
 
 
 def _guild_block(guild, cfg, urlkey):
-    parts = [f"<h2 class=sechead style='font-size:22px;margin-top:20px'>{guild.name}</h2>"]
+    parts = [f"<h2 class=sechead style='font-size:22px;margin-top:20px'>{_esc(guild.name)}</h2>"]
     for title, keys in SECTIONS:
         anchor = SECTION_IDS.get(title, "")
         inner = "".join(_field(k, SCHEMA[k][0], SCHEMA[k][1], guild, cfg, urlkey)
@@ -305,7 +322,7 @@ def _whitelist_block(guild, cfg, urlkey):
 
 
 def _mod_block(guild, urlkey):
-    chans = "".join(f"<option value={c.id}>#{c.name}</option>" for c in guild.text_channels[:25])
+    chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
     return (f"<div class=row><label>Bulk delete</label>"
             f"<form method=post action='/api/mod?key={urlkey}'>"
             f"<input type=hidden name=guild value={guild.id}>"
@@ -340,7 +357,7 @@ def _rolemenu_block(guild, urlkey):
         f"<label class=pill><input type=checkbox name=roles value={r.id}> {r.name}</label>"
         for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)[:25]
         if not r.is_default() and not r.managed)
-    chans = "".join(f"<option value={c.id}>#{c.name}</option>" for c in guild.text_channels[:25])
+    chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
     return (("".join(rows) or "<p><small>No menus yet.</small></p>")
             + f"<form method=post action='/api/rolemenu?key={urlkey}'>"
             f"<input type=hidden name=guild value={guild.id}>"
@@ -373,7 +390,7 @@ def _leaders(b, guild):
         return ""
     top = max(board[0][0], 1)
     rows = "".join(
-        f"<div class=lb><span class=who>{(guild.get_member(int(uid)).display_name if guild.get_member(int(uid)) else '—')}</span>"
+        f"<div class=lb><span class=who>{_esc(guild.get_member(int(uid)).display_name if guild.get_member(int(uid)) else '—')}</span>"
         f"<span class=track><span class=fill style='width:{int(x * 100 / top)}%'></span></span>"
         f"<span class=xp>{x:,} XP</span></div>" for x, uid in board)
     return (f"<div class=card><h2>🏆 XP Leaders <span class=x>···</span></h2>"
@@ -438,10 +455,15 @@ def _weekheat(b, guilds):
 
 def create_app():
     try:
-        from flask import Flask, request, redirect
+        from flask import Flask, request, redirect, make_response
     except ImportError:
         return None
     app = Flask(__name__)
+
+    @app.after_request
+    def _nocache(resp):
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        return resp
 
     def guilds():
         b = _bot()
@@ -497,6 +519,8 @@ def create_app():
             val = int(raw) if raw.isdigit() else None
         elif kind == "words":
             val = [x.strip().lower() for x in raw.split(",") if x.strip()][:100]
+        elif kind == "channellist":
+            val = [int(x) for x in request.form.getlist("value") if x.isdigit()][:50]
         else:
             val = raw[:50]
         b.update_config(gid, **{name: val})
