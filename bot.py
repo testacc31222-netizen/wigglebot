@@ -2288,6 +2288,7 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
         except ImportError:
             return "no ffmpeg on this host — redeploy so requirements install"
     clean = _re.sub(r"[*_~>|`]", "", text)[:300] or "hello"
+    voice = VOICES.get(get_config(guild.id).get("tts_voice", "aria"), "en-US-AriaNeural")
     try:
         import edge_tts
         import imageio_ffmpeg
@@ -2297,7 +2298,7 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
     try:
         tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
         tmp.close()
-        await edge_tts.Communicate(clean, voice="en-US-AriaNeural").save(tmp.name)
+        await edge_tts.Communicate(clean, voice=voice).save(tmp.name)
         while vc.is_playing():
             await asyncio.sleep(0.5)
         try:
@@ -2312,6 +2313,34 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
         return "speaking"
     except Exception as exc:
         return f"voice failed: {type(exc).__name__}"
+
+
+VOICES = {
+    "aria": "en-US-AriaNeural",
+    "jenny": "en-US-JennyNeural",
+    "guy": "en-US-GuyNeural",
+    "davis": "en-US-DavisNeural",
+    "jane": "en-US-JaneNeural",
+    "sara": "en-US-SaraNeural",
+    "tony": "en-US-TonyNeural",
+    "nancy": "en-US-NancyNeural",
+}
+
+
+@bot.command(name="voice")
+@owner_or_admin()
+async def cmd_voice(ctx: commands.Context, name: str = "") -> None:
+    """Pick the AI voice. Usage: .voice [aria|jenny|guy|davis|jane|sara|tony|nancy]"""
+    name = name.lower().strip()
+    if not name:
+        cur = get_config(ctx.guild.id).get("tts_voice", "aria")
+        await ctx.send("Voice: **{}**. Options: {}".format(cur, ", ".join(sorted(VOICES))))
+        return
+    if name not in VOICES:
+        await ctx.send(f"Unknown voice. Options: {', '.join(sorted(VOICES))}")
+        return
+    update_config(ctx.guild.id, tts_voice=name)
+    await ctx.send(f"🎙️ Voice set to **{name}**.")
 
 
 @bot.command(name="speak")
@@ -2845,6 +2874,7 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_setlobby.error
 @cmd_vcjoin.error
 @cmd_vcleave.error
+@cmd_voice.error
 @cmd_voiceauto.error
 @cmd_whitelist.error
 @cmd_say.error
@@ -2880,7 +2910,7 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "setqotd", "chaton", "chatoff", "explode",
                                                      "ticketsetup", "setwelcome", "setgoodbye",
                                                      "linkchannel", "vcjoin", "vcleave",
-                                                     "voiceauto"):
+                                                     "voiceauto", "voice"):
             await ctx.send("❌ Bot owner or server admin only.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
