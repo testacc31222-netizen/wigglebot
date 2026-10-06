@@ -1,15 +1,1 @@
-{
-  "1551097539804008580": {
-    "verify_channel_id": 1551785090110193686,
-    "verified_role_id": 1551097539804008585,
-    "verify_enabled": true,
-    "log_channel_id": 1551428172178915369,
-    "whitelisted_user_ids": [
-      1439686674417192991,
-      1114690594032320592
-    ],
-    "chat_channel_id": 1552103960389877881,
-    "chat_enabled": true,
-    "qotd_channel_id": 1551097540621893657
-  }
-}
+{}

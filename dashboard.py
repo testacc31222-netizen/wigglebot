@@ -36,6 +36,11 @@ SCHEMA: dict[str, tuple[str, str]] = {
     "automod_invites": ("bool", "Delete Discord invites"),
     "automod_links": ("bool", "Delete all links"),
     "automod_max_mentions": ("int", "Max mentions per message"),
+    "automod_spam": ("bool", "Repeat-spam filter (4x/30s)"),
+    "automod_caps": ("bool", "CAPS filter (>70%)"),
+    "automod_emoji": ("bool", "Emoji-spam filter"),
+    "automod_max_emoji": ("int", "Max emojis per message"),
+    "automod_words": ("words", "Banned words (comma separated)"),
     "lobby_channel_id": ("channel", "Join-to-create VC"),
     "chat_channel_id": ("channel", "Bot chat channel (blank = anywhere)"),
     "chat_enabled": ("bool", "Chatbot replies"),
@@ -49,7 +54,9 @@ SECTIONS = [
     ("🎭 Reaction roles", []),
     ("👋 Welcome", ["welcome_channel_id", "goodbye_channel_id"]),
     ("📝 Logging", ["log_channel_id"]),
-    ("🤖 Automod", ["automod_invites", "automod_links", "automod_max_mentions"]),
+    ("🤖 Automod", ["automod_invites", "automod_links", "automod_max_mentions",
+                    "automod_spam", "automod_caps", "automod_emoji", "automod_max_emoji",
+                    "automod_words"]),
     ("🔊 Voice lobby", ["lobby_channel_id"]),
     ("💬 Chatbot", ["chat_enabled", "chat_channel_id", "bot_mood", "autoreact"]),
     ("❓ Daily question", ["qotd_channel_id"]),
@@ -179,6 +186,14 @@ def _field(key, kind, label, guild, cfg, urlkey):
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
                 f"<input type=text name=value value='{cfg.get(key) or ''}' size=6>"
+                f"<button>Save</button></form></div>")
+    if kind == "words":
+        cur = ", ".join(cfg.get(key) or [])
+        return (f"<div class=row><label>{label}</label>"
+                f"<form method=post action='/api/config?key={urlkey}'>"
+                f"<input type=hidden name=guild value={guild.id}>"
+                f"<input type=hidden name=key value={key}>"
+                f"<input type=text name=value value='{cur}' size=24>"
                 f"<button>Save</button></form></div>")
     if kind == "role":
         return (f"<div class=row><label>{label}</label>"
@@ -399,6 +414,8 @@ def create_app():
                 return redirect(f"/?key={key}")
         elif kind in ("channel", "role"):
             val = int(raw) if raw.isdigit() else None
+        elif kind == "words":
+            val = [x.strip().lower() for x in raw.split(",") if x.strip()][:100]
         else:
             val = raw[:50]
         b.update_config(gid, **{name: val})

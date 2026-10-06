@@ -137,6 +137,11 @@ DEFAULT_GUILD_CONFIG = {
     "automod_invites": True,    # delete discord invites (top raid vector)
     "automod_links": False,     # delete all links
     "automod_max_mentions": 5,  # more mentions = delete + strike
+    "automod_spam": True,       # 4+ repeats in 30s = delete + strike
+    "automod_caps": True,       # >70% caps (10+ chars) = delete
+    "automod_emoji": True,      # 8+ emojis = delete
+    "automod_max_emoji": 8,
+    "automod_words": [],        # banned words/phrases (lowercase match)
     "lobby_channel_id": None,   # join-to-create voice channel
     "chat_channel_id": None,    # bot chat only here when set
     "bot_mood": "chill",
@@ -1383,7 +1388,9 @@ async def help_responder(message: discord.Message) -> None:
 
 automod_strikes: dict[int, dict[int, list]] = defaultdict(lambda: defaultdict(list))
 automod_deleted: set[int] = set()
+spam_track: dict[int, dict[int, deque]] = defaultdict(lambda: defaultdict(deque))
 AUTOMOD_STRIKE_WINDOW_S = 600
+SPAM_COUNT, SPAM_WINDOW_S = 4, 30
 AUTOMOD_STRIKES_TO_MUTE = 3
 
 INVITE_RE = None
@@ -1401,6 +1408,8 @@ def _regexes():
 
 async def automod_check(message: discord.Message) -> bool:
     """Returns True if the message was deleted as a violation."""
+    import hashlib
+    import re as _re
     cfg = get_config(message.guild.id)
     content = message.content or ""
     invite_re, link_re = _regexes()
@@ -1411,6 +1420,28 @@ async def automod_check(message: discord.Message) -> bool:
         reason = "links aren't allowed here"
     elif len(message.mentions) + len(message.role_mentions) > int(cfg.get("automod_max_mentions", 5)):
         reason = f"too many mentions (max {cfg.get('automod_max_mentions', 5)})"
+    if not reason and cfg.get("automod_words"):
+        low = content.lower()
+        hit = next((w for w in cfg["automod_words"] if w and w.lower() in low), None)
+        if hit:
+            reason = "that word/phrase isn't allowed here"
+    if not reason and cfg.get("automod_caps", True) and len(content) >= 10:
+        letters = [c for c in content if c.isalpha()]
+        if letters and sum(c.isupper() for c in letters) / len(letters) > 0.7:
+            reason = "too much CAPS — chill the shift key"
+    if not reason and cfg.get("automod_emoji", True):
+        emojis = len(_re.findall(r"<a?:\w+:\d+>|[\U0001F000-\U0001FAFF☀-➿⬀-⯿]", content))
+        if emojis > int(cfg.get("automod_max_emoji", 8)):
+            reason = f"too many emojis (max {cfg.get('automod_max_emoji', 8)})"
+    if not reason and cfg.get("automod_spam", True) and content.strip():
+        now = time.time()
+        dq = spam_track[message.guild.id][message.author.id]
+        h = hashlib.md5(content.strip().lower().encode()).hexdigest()
+        dq.append((now, h))
+        while dq and now - dq[0][0] > SPAM_WINDOW_S:
+            dq.popleft()
+        if sum(1 for _, x in dq if x == h) >= SPAM_COUNT:
+            reason = f"stop repeating yourself ({SPAM_COUNT}x in {SPAM_WINDOW_S}s)"
     if not reason:
         return False
     try:
@@ -2051,7 +2082,10 @@ async def cmd_config(ctx: commands.Context, key: str = "", *, value: str = "") -
         elif key == "log_channel_id":
             parsed = int(value.strip("<#>")) if value.strip() not in ("none", "null", "0") else None
         elif isinstance(default, list):
-            parsed = [int(x.strip("<>@#!&")) for x in value.split(",") if x.strip()]
+            if key == "automod_words":
+                parsed = [x.strip().lower() for x in value.split(",") if x.strip()][:100]
+            else:
+                parsed = [int(x.strip("<>@#!&")) for x in value.split(",") if x.strip()]
         else:
             parsed = value.strip()
             if key == "raid_action" and parsed not in VALID_ACTIONS:
