@@ -145,6 +145,8 @@ DEFAULT_GUILD_CONFIG = {
     "qotd_channel_id": None,    "verify_channel_id": None,
     "verified_role_id": None,
     "verify_enabled": False,
+    "welcome_channel_id": None,
+    "goodbye_channel_id": None,
     # NOTE: the raid initiator is ALWAYS banned, regardless of raid_action.
 }
 
@@ -611,6 +613,21 @@ async def on_member_join(member: discord.Member) -> None:
     # burst → raid
     if len(dq) >= threshold and not raid_active.get(guild.id):
         await trigger_raid(guild, cfg, recent_members)
+        return
+    # welcome new member
+    wchan = guild.get_channel(cfg.get("welcome_channel_id") or 0)
+    if wchan:
+        try:
+            embed = E(f"👋 Welcome, {member.display_name}!",
+                      f"{member.mention} joined **{guild.name}** — you're member "
+                      f"**#{len([m for m in guild.members if not m.bot])}**!\n"
+                      f"Head to #verify if you can't see channels.",
+                      kind="good")
+            if member.display_avatar:
+                embed.set_thumbnail(url=member.display_avatar.url)
+            await wchan.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 
 @bot.event
@@ -2046,6 +2063,54 @@ async def cmd_config(ctx: commands.Context, key: str = "", *, value: str = "") -
         await ctx.send("❌ Could not parse value (expected a number/ID).")
 
 
+@bot.command(name="setwelcome")
+@owner_or_admin()
+async def cmd_setwelcome(ctx: commands.Context, channel: str = "") -> None:
+    """Welcome channel. Usage: .setwelcome #channel | .setwelcome off"""
+    if channel.strip().lower() in ("off", "none", "clear", ""):
+        if not channel:
+            cid = get_config(ctx.guild.id).get("welcome_channel_id")
+            ch = ctx.guild.get_channel(cid) if cid else None
+            await ctx.send(f"Welcome channel: {ch.mention if ch else 'not set'}.")
+            return
+        update_config(ctx.guild.id, welcome_channel_id=None)
+        await ctx.send("Welcome messages off.")
+        return
+    try:
+        target = ctx.guild.get_channel(int(channel.strip("<#>")))
+    except ValueError:
+        target = None
+    if target is None:
+        await ctx.send(f"Usage: `{PREFIX}setwelcome #channel`")
+        return
+    update_config(ctx.guild.id, welcome_channel_id=target.id)
+    await ctx.send(f"👋 Welcomes go to {target.mention}.")
+
+
+@bot.command(name="setgoodbye")
+@owner_or_admin()
+async def cmd_setgoodbye(ctx: commands.Context, channel: str = "") -> None:
+    """Goodbye channel. Usage: .setgoodbye #channel | .setgoodbye off"""
+    if channel.strip().lower() in ("off", "none", "clear", ""):
+        if not channel:
+            cid = get_config(ctx.guild.id).get("goodbye_channel_id")
+            ch = ctx.guild.get_channel(cid) if cid else None
+            await ctx.send(f"Goodbye channel: {ch.mention if ch else 'not set'}.")
+            return
+        update_config(ctx.guild.id, goodbye_channel_id=None)
+        await ctx.send("Goodbye messages off.")
+        return
+    try:
+        target = ctx.guild.get_channel(int(channel.strip("<#>")))
+    except ValueError:
+        target = None
+    if target is None:
+        await ctx.send(f"Usage: `{PREFIX}setgoodbye #channel`")
+        return
+    update_config(ctx.guild.id, goodbye_channel_id=target.id)
+    await ctx.send(f"👋 Goodbyes go to {target.mention}.")
+
+
 @bot.command(name="setlog")
 @owner_or_admin()
 async def cmd_setlog(ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
@@ -2419,6 +2484,15 @@ async def cmd_slowmode(ctx: commands.Context, seconds: int = -1) -> None:
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
     await send_log(member.guild, f"👋 {member} (`{member.id}`) left.")
+    cfg = get_config(member.guild.id)
+    gchan = member.guild.get_channel(cfg.get("goodbye_channel_id") or 0)
+    if gchan:
+        try:
+            await gchan.send(embed=E(f"👋 {member.display_name} left",
+                                     f"We'll… probably not miss them. Bye!",
+                                     kind="info"))
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 
 @bot.event
@@ -2554,6 +2628,8 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_config.error
 @cmd_setlog.error
 @cmd_setchat.error
+@cmd_setwelcome.error
+@cmd_setgoodbye.error
 @cmd_rolemenu.error
 @cmd_ticketsetup.error
 @cmd_aitest.error
@@ -2592,7 +2668,7 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "verifysetup", "verifyoff", "aitest",
                                                      "rolemenu", "teach", "unteach", "mood",
                                                      "setqotd", "chaton", "chatoff", "explode",
-                                                     "ticketsetup"):
+                                                     "ticketsetup", "setwelcome", "setgoodbye"):
             await ctx.send("❌ Bot owner or server admin only.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
@@ -2610,4 +2686,11 @@ async def globally_enabled(ctx: commands.Context) -> bool:
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("Missing DISCORD_TOKEN. Copy .env.example to .env and fill it in.")
+    try:
+        import dashboard as _dash
+        import sys as _sys
+        _dash.bot_ref = _sys.modules[__name__]
+        _dash.start()
+    except Exception as exc:
+        print(f"[dash] not started: {exc}")
     bot.run(TOKEN)
