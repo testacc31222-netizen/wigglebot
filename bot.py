@@ -952,6 +952,12 @@ def owner_or_admin():
     return commands.check(predicate)
 
 
+def owner_only():
+    async def predicate(ctx: commands.Context) -> bool:
+        return ctx.author.id in OWNER_IDS
+    return commands.check(predicate)
+
+
 # ---------- talker pack: teach / mood / trivia / story / fun / react / catchup / tr / qotd ----------
 
 TEACH_FILE = BASE_DIR / "teach.json"
@@ -1686,6 +1692,40 @@ async def cmd_roll(ctx: commands.Context, sides: str = "100") -> None:
 @bot.command(name="flip")
 async def cmd_flip(ctx: commands.Context) -> None:
     await ctx.send(f"🪙 **{random.choice(['heads', 'tails'])}**")
+
+
+@bot.command(name="status")
+@owner_only()
+async def cmd_statusbot(ctx: commands.Context, *, text: str = "") -> None:
+    """Set the bot's status live. Usage: .status <text> | .status off"""
+    if not text or text.lower() == "off":
+        await bot.change_presence(activity=None)
+        await ctx.send("Status cleared.")
+        return
+    await bot.change_presence(activity=discord.CustomActivity(name=text[:120]))
+    await ctx.send(f"Status: **{text[:120]}**")
+
+
+@bot.command(name="setbio")
+@owner_only()
+async def cmd_setbio(ctx: commands.Context, *, text: str = "") -> None:
+    """Set the bot's About Me bio. Usage: .setbio <text> (190 max)"""
+    if not text:
+        await ctx.send(f"Usage: `{PREFIX}setbio <text>`")
+        return
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as sess:
+            async with sess.patch(
+                "https://discord.com/api/v10/users/@me",
+                headers={"Authorization": f"Bot {TOKEN}"},
+                json={"bio": text[:190]},
+            ) as r:
+                if r.status == 200:
+                    await ctx.send("Bio updated! Check the bot's profile.")
+                else:
+                    await ctx.send(f"❌ Discord said no (HTTP {r.status}).")
+    except Exception as exc:
+        await ctx.send(f"❌ Failed: `{type(exc).__name__}`")
 
 
 @bot.command(name="aitest")
@@ -2473,12 +2513,6 @@ async def cmd_explode(ctx: commands.Context, *, target: str = "") -> None:
         pass
 
 
-def owner_only():
-    async def predicate(ctx: commands.Context) -> bool:
-        return ctx.author.id in OWNER_IDS
-    return commands.check(predicate)
-
-
 @bot.command(name="shutdown")
 @owner_only()
 async def cmd_shutdown(ctx: commands.Context) -> None:
@@ -2523,6 +2557,8 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_rolemenu.error
 @cmd_ticketsetup.error
 @cmd_aitest.error
+@cmd_statusbot.error
+@cmd_setbio.error
 @cmd_setlobby.error
 @cmd_whitelist.error
 @cmd_say.error
@@ -2550,8 +2586,8 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_diag.error
 async def admin_error(ctx: commands.Context, error: commands.CommandError) -> None:
     if isinstance(error, commands.CheckFailure):
-        if ctx.command and ctx.command.name in ("shutdown", "disable", "enable"):
-            await ctx.send("❌ Owner only — set your Discord user ID as OWNER_ID in .env.")
+        if ctx.command and ctx.command.name in ("shutdown", "disable", "enable", "status",
+                                                 "setbio"):            await ctx.send("❌ Owner only — set your Discord user ID as OWNER_ID in .env.")
         elif ctx.command and ctx.command.name in ("setlog", "setlobby", "setchat", "diag",
                                                      "verifysetup", "verifyoff", "aitest",
                                                      "rolemenu", "teach", "unteach", "mood",
