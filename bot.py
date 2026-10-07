@@ -2363,6 +2363,29 @@ async def cmd_voice(ctx: commands.Context, name: str = "") -> None:
     await ctx.send(f"🎙️ Voice set to **{name}**.")
 
 
+@bot.command(name="ask")
+async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
+    """Ask the AI out loud in VC. Usage: .ask <question> (bot must be in VC)"""
+    if not question:
+        await ctx.send(f"Usage: `{PREFIX}ask <question>` — I think, then say it in VC.")
+        return
+    answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question)
+    if not answer:
+        base = _fallback_reply(ctx.author.display_name, question)
+        low_q = (" " + question.lower() + " ")
+        if looks_like_question(question) and not any(t in low_q for t in SELF_TOPICS):
+            found = await web_search_answer(question)
+            answer = f"looked it up:\n{found}" if found else base
+        else:
+            answer = base
+    if not answer or not answer.strip():
+        answer = _fallback_reply(ctx.author.display_name, question)
+    await ctx.send(answer[:1900])
+    status = await speak_text(ctx.guild, answer[:300])
+    if status != "speaking":
+        await ctx.send(f"🔇 (voice: {status})")
+
+
 @bot.command(name="speak")
 async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
     """Bot says it out loud in VC. Usage: .speak <text>"""
