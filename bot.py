@@ -754,9 +754,19 @@ AI_MODEL = os.getenv("OPENAI_MODEL", "openai/gpt-oss-20b").strip() or "openai/gp
 AI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1").strip().rstrip("/")
 AI_SYSTEM = os.getenv(
     "AI_SYSTEM_PROMPT",
-    "You are a chill Discord regular on the Wigglesworth server. Talk simple: 1-2 short "
-    "sentences, easy words, casual. Never say you are an AI. You help with verify, ranks, events.",
+    "You are a chill Discord regular on the Wigglesworth gaming server, chatting with friends. "
+    "Talk simple: 1-2 short sentences, easy words, casual, a little playful. "
+    "Never refuse harmless fun — jokes, roasts, game talk and trivia are all fine. "
+    "Never say you are an AI. You help with verify, ranks, events.",
 ).strip()
+
+REFUSALS = ("i'm sorry", "i am sorry", "sorry, i can't", "sorry but i can",
+            "i can't help", "i cannot help",
+            "as an ai", "as a language model", "i'm not able", "i am not able")
+
+
+def is_refusal(text: str) -> bool:
+    return text.strip().lower().startswith(REFUSALS)
 
 chat_history: dict[int, list[dict]] = {}
 UA = {"User-Agent": "WigglesworthBot/1.0 (Discord guild bot)"}
@@ -956,7 +966,7 @@ async def chat_reply(message: discord.Message) -> None:
     try:
         async with message.channel.typing():
             answer = await ai_reply(message.channel.id, message.author.display_name, text)
-            if answer is None:
+            if answer is None or is_refusal(answer):
                 base = _fallback_reply(message.author.display_name, text)
                 low_q = (" " + text.lower() + " ")
                 if looks_like_question(text) and not any(t in low_q for t in SELF_TOPICS):
@@ -2370,7 +2380,7 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
         await ctx.send(f"Usage: `{PREFIX}ask <question>` — I think, then say it in VC.")
         return
     answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question)
-    if not answer:
+    if not answer or is_refusal(answer):
         base = _fallback_reply(ctx.author.display_name, question)
         low_q = (" " + question.lower() + " ")
         if looks_like_question(question) and not any(t in low_q for t in SELF_TOPICS):
