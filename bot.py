@@ -2289,24 +2289,44 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
             return "no ffmpeg on this host — redeploy so requirements install"
     clean = _re.sub(r"[*_~>|`]", "", text)[:300] or "hello"
     voice = VOICES.get(get_config(guild.id).get("tts_voice", "aria"), "en-US-AriaNeural")
+    mp3 = None
+    tts_err = ""
+    for attempt_voice in (voice, "en-US-GuyNeural"):
+        try:
+            import edge_tts
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
+            tmp.close()
+            await edge_tts.Communicate(clean, voice=attempt_voice).save(tmp.name)
+            import os as _os
+            if _os.path.getsize(tmp.name) < 500:
+                raise ValueError("empty audio back from TTS")
+            mp3 = tmp.name
+            break
+        except Exception as exc:
+            tts_err = f"{type(exc).__name__}: {exc}"[:200]
+            print(f"[voice] TTS failed ({attempt_voice}): {tts_err}")
+            try:
+                _os.remove(tmp.name)
+            except Exception:
+                pass
+    if not mp3:
+        return f"TTS gave silence ({tts_err or 'unknown'}). Try `.speak hello` to test."
     try:
         import edge_tts
         import imageio_ffmpeg
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     except ImportError:
         return "voice engine missing — redeploy so requirements install"
+    import os as _os2
     try:
-        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
-        tmp.close()
-        await edge_tts.Communicate(clean, voice=voice).save(tmp.name)
         while vc.is_playing():
             await asyncio.sleep(0.5)
         try:
-            vc.play(discord.FFmpegPCMAudio(tmp.name, executable=ffmpeg_exe),
-                    after=lambda e: __import__("os").remove(tmp.name) if __import__("os").path.exists(tmp.name) else None)
+            vc.play(discord.FFmpegPCMAudio(mp3, executable=ffmpeg_exe),
+                    after=lambda e: _os2.remove(mp3) if _os2.path.exists(mp3) else None)
         except discord.ClientException:
             try:
-                __import__("os").remove(tmp.name)
+                _os2.remove(mp3)
             except OSError:
                 pass
             return "already playing — wait a sec, or the voice link died (rejoin with `.vcjoin`)"
