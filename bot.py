@@ -2900,6 +2900,29 @@ async def cmd_enable(ctx: commands.Context) -> None:
     await ctx.send("🟢 Bot enabled.")
 
 
+@bot.command(name="giverole")
+@owner_only()
+async def cmd_giverole(ctx: commands.Context, member: discord.Member | None = None,
+                       role: str = "") -> None:
+    """Owner grants any role (bot must outrank it). Usage: .giverole @user @role"""
+    if member is None or not role:
+        await ctx.send(f"Usage: `{PREFIX}giverole @user @role`")
+        return
+    target = None
+    try:
+        target = ctx.guild.get_role(int(role.strip("<>@#!&")))
+    except ValueError:
+        pass
+    if target is None:
+        await ctx.send("Role not found — mention it.")
+        return
+    try:
+        await member.add_roles(target, reason=f"granted by owner {ctx.author}")
+        await ctx.send(f"✅ **{member.display_name}** got **{target.name}**.")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        await ctx.send(f"❌ Failed (my role must sit above `{target.name}`): {exc}")
+
+
 @bot.command(name="diag")
 @owner_or_admin()
 async def cmd_diag(ctx: commands.Context) -> None:
@@ -2953,10 +2976,12 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_disable.error
 @cmd_enable.error
 @cmd_diag.error
+@cmd_giverole.error
 async def admin_error(ctx: commands.Context, error: commands.CommandError) -> None:
     if isinstance(error, commands.CheckFailure):
         if ctx.command and ctx.command.name in ("shutdown", "disable", "enable", "status",
-                                                 "setbio"):            await ctx.send("❌ Owner only — set your Discord user ID as OWNER_ID in .env.")
+                                                 "setbio", "giverole"):
+            await ctx.send("❌ Owner only — set your Discord user ID as OWNER_ID in .env.")
         elif ctx.command and ctx.command.name in ("setlog", "setlobby", "setchat", "diag",
                                                      "verifysetup", "verifyoff", "aitest",
                                                      "rolemenu", "teach", "unteach", "mood",
