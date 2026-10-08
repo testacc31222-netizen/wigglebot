@@ -506,6 +506,11 @@ def _sidebar(g0, guilds):
     return ("<aside class=sidebar><div class=sbrand><span class=orb></span>"
             "<span><b>Wigglesworth</b><small>Discord Bot</small></span></div>"
             + "".join(links) +
+            "<div class=snavlabel>SHORTCUTS</div>"
+            "<a class=snav href='https://heh.wwiggles.org/dashboard/#overview' target=_blank rel=noopener>"
+            "<span class=ic>🌐</span>Site Dashboard</a>"
+            "<a class=snav href='https://railway.com/project/9cbe96a0-7d1c-4b4f-b649-7cab2ee543b8/service/0fe7242b-c24e-4247-9025-28997af0c339?environmentId=dfdf3ff0-190e-4dc7-befa-4e62d5a2fbb6' target=_blank rel=noopener>"
+            "<span class=ic>🚂</span>Railway Service</a>"
             "<div class=servers><div class=snavlabel>Servers</div>" + "".join(srvs) + "</div></aside>")
 
 
