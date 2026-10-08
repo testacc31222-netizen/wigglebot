@@ -831,6 +831,31 @@ SAVAGE_SWEAR_LINES = (
     "damn right i curse. welcome to savage mode 😤",
 )
 
+SWEAR_REQUESTS = ("say fuck", "say shit", "say damn", "say bitch", "say ass",
+                  "can you curse", "you can curse", "can you swear", "do you swear",
+                  "curse for me", "swear for me", "say the f word", "drop an f bomb",
+                  "drop the f bomb", "say a swear", "say a curse word")
+
+SAVAGE_SWEAR_FLEX = (
+    "fuck. shit. damn. there, happy now? 💀",
+    "oh I can curse — fuck, shit, bitch. stay mad 😎",
+    "FUCK. loud enough for you, {n}? 💀",
+    "shit yeah I swear. what else you got, {n}? 😤",
+)
+
+PREACHY = ("no name-calling", "name calling", "name-calling", "talk skills",
+           "not drama", "keep it respectful", "be respectful", "let's keep it",
+           "lets keep it", "be nice", "no need for", "respectful")
+
+SAVAGE_COMEBACKS = (
+    "{n} said shut up? bold from the tutorial boss 💀",
+    "{n} out here barking orders with tutorial-completion energy 😭",
+    "shut up? {n}, you couldn't even mute yourself 💀",
+    "{n} talking crazy. somebody clip this L 😎",
+    "damn {n}, all bark and zero bite. sit the fuck down 💀",
+    "imagine getting cooked after saying 'shut up'. embarrassing 😭",
+)
+
 chat_history: dict[int, list[dict]] = {}
 UA = {"User-Agent": "WigglesworthBot/1.0 (Discord guild bot)"}
 SELF_TOPICS = ("rank", "level", " xp", "raid", "lockdown", "ban", "verify",
@@ -1059,6 +1084,15 @@ async def chat_reply(message: discord.Message) -> None:
         except (discord.Forbidden, discord.HTTPException):
             pass
         return
+    savage = get_config(message.guild.id).get("bot_mood") == "savage"
+    low_in = " " + text.lower() + " "
+    if savage and any(p in low_in for p in SWEAR_REQUESTS):
+        try:
+            await message.reply(random.choice(SAVAGE_SWEAR_FLEX).format(
+                n=message.author.display_name), mention_author=False)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return
     try:
         async with message.channel.typing():
             answer = await ai_reply(message.channel.id, message.author.display_name, text,
@@ -1068,6 +1102,10 @@ async def chat_reply(message: discord.Message) -> None:
             if (answer and get_config(message.guild.id).get("bot_mood") == "savage"
                     and any(p in answer.lower() for p in CLEAN_TALK)):
                 answer = random.choice(SAVAGE_SWEAR_LINES)
+            if (answer and get_config(message.guild.id).get("bot_mood") == "savage"
+                    and any(p in answer.lower() for p in PREACHY)):
+                answer = random.choice(SAVAGE_COMEBACKS).format(
+                    n=message.author.display_name)
             if answer is None or is_refusal(answer):
                 base = _fallback_reply(message.author.display_name, text)
                 low_q = (" " + text.lower() + " ")
@@ -2556,9 +2594,15 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
                               ctx.guild.id if ctx.guild else None)
     if answer is not None and is_blocked_topic(answer):
         answer = random.choice(BLOCKED_REPLY)
+    ask_savage = bool(ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage")
+    if ask_savage and any(p in (" " + question.lower() + " ") for p in SWEAR_REQUESTS):
+        answer = random.choice(SAVAGE_SWEAR_FLEX).format(n=ctx.author.display_name)
     if (answer and ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage"
             and any(p in answer.lower() for p in CLEAN_TALK)):
         answer = random.choice(SAVAGE_SWEAR_LINES)
+    if (answer and ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage"
+            and any(p in answer.lower() for p in PREACHY)):
+        answer = random.choice(SAVAGE_COMEBACKS).format(n=ctx.author.display_name)
     if not answer or is_refusal(answer):
         base = _fallback_reply(ctx.author.display_name, question)
         low_q = (" " + question.lower() + " ")
