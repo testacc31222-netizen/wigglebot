@@ -159,6 +159,8 @@ DEFAULT_GUILD_CONFIG = {
     "voice_auto": False,        # speak AI replies aloud when sitting in VC    "verify_channel_id": None,
     "verified_role_id": None,
     "verify_enabled": False,
+    "abuse_role_id": None,      # role pinged by .abuse (steal-a-brainrot admin abuse)
+    "abuse_channel_id": None,   # channel the abuse ping goes to (blank = where used)
     "welcome_channel_id": None,
     "goodbye_channel_id": None,
     # NOTE: the raid initiator is ALWAYS banned, regardless of raid_action.
@@ -2307,6 +2309,69 @@ async def cmd_setchat(ctx: commands.Context, channel: str = "") -> None:
         return
     update_config(ctx.guild.id, chat_channel_id=target.id)
     await ctx.send(f"✅ I'll only chat in {target.mention}.")
+
+
+ABUSE_COOLDOWN_S = 300  # one abuse ping per 5 min per server
+abuse_cd: dict[int, float] = {}
+
+
+@bot.command(name="abuse")
+async def cmd_abuse(ctx: commands.Context, *, reason: str = "") -> None:
+    """Ping the abuse-alert role. Usage: .abuse [what's happening in game]"""
+    if ctx.guild is None:
+        return
+    cfg = get_config(ctx.guild.id)
+    role = ctx.guild.get_role(cfg.get("abuse_role_id") or 0)
+    if role is None:
+        await ctx.send(f"No abuse role set. An admin should run `{PREFIX}setabuserole @role` "
+                       f"or set it in the panel.")
+        return
+    now = time.time()
+    last = abuse_cd.get(ctx.guild.id, 0)
+    if now - last < ABUSE_COOLDOWN_S:
+        wait = int(ABUSE_COOLDOWN_S - (now - last))
+        await ctx.send(f"🚨 Already pinged — cooldown {wait}s left. Mods have been notified.")
+        return
+    abuse_cd[ctx.guild.id] = now
+    clean = sanitize_mentions(reason.strip()[:300])
+    desc = f"Reported by {ctx.author.mention} in {ctx.channel.mention}"
+    if clean:
+        desc += f"\n> {clean}"
+    em = E("🚨 ADMIN ABUSE — get in game NOW", desc, kind="raid")
+    target = ctx.guild.get_channel(cfg.get("abuse_channel_id") or 0) or ctx.channel
+    try:
+        await target.send(content=role.mention, embed=em)
+    except (discord.Forbidden, discord.HTTPException):
+        await ctx.send(f"{role.mention} 🚨 admin abuse reported by {ctx.author.mention}!")
+        return
+    if target.id != ctx.channel.id:
+        await ctx.send(f"🚨 {role.name} pinged — help is on the way.")
+
+
+@bot.command(name="setabuserole")
+@owner_or_admin()
+async def cmd_setabuserole(ctx: commands.Context, role: discord.Role | None = None) -> None:
+    """Set the role .abuse pings. Usage: .setabuserole @role"""
+    if role is None:
+        cur = ctx.guild.get_role(get_config(ctx.guild.id).get("abuse_role_id") or 0)
+        await ctx.send(f"Abuse role: {cur.mention if cur else 'not set'}. "
+                       f"Usage: `{PREFIX}setabuserole @role`")
+        return
+    update_config(ctx.guild.id, abuse_role_id=role.id)
+    await ctx.send(f"✅ `.abuse` will now ping {role.mention}.")
+
+
+@bot.command(name="setabusechannel")
+@owner_or_admin()
+async def cmd_setabusechannel(ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
+    """Set where .abuse pings go. Usage: .setabusechannel #channel"""
+    if channel is None:
+        cur = ctx.guild.get_channel(get_config(ctx.guild.id).get("abuse_channel_id") or 0)
+        await ctx.send(f"Abuse channel: {cur.mention if cur else 'wherever .abuse is used'}. "
+                       f"Usage: `{PREFIX}setabusechannel #channel`")
+        return
+    update_config(ctx.guild.id, abuse_channel_id=channel.id)
+    await ctx.send(f"✅ Abuse pings will go to {channel.mention}.")
 
 
 @bot.command(name="vcjoin")

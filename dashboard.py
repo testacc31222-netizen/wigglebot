@@ -48,6 +48,8 @@ SCHEMA: dict[str, tuple[str, str]] = {
     "bot_mood": ("mood", "Chatbot mood"),
     "autoreact": ("bool", "Auto reactions"),
     "qotd_channel_id": ("channel", "Question-of-the-day channel"),
+    "abuse_role_id": ("role", "Abuse ping role (.abuse pings this)"),
+    "abuse_channel_id": ("channel", "Abuse alert channel (blank = where used)"),
     "join_threshold_count": ("int", "Raid: joins to trigger"),
     "join_threshold_seconds": ("int", "Raid: within seconds"),
     "raid_action": ("action", "Raid response"),
@@ -62,6 +64,7 @@ SECTIONS = [
     ("🚨 Raid guard", ["join_threshold_count", "join_threshold_seconds", "raid_action",
                        "lockdown_duration_minutes", "new_account_age_days",
                        "timeout_duration_minutes"]),
+    ("🚨 Abuse ping", ["abuse_role_id", "abuse_channel_id"]),
     ("🔐 Lockdown", []),
     ("📋 Whitelist", []),
     ("🧹 Mod actions", []),
@@ -155,7 +158,8 @@ BASE = ("<!doctype html><html><head><meta charset=utf-8>"
         "<div class=topbar><span class=brand><span class=orb></span>Wigglesworth</span>"
         "<span class=pills><a href='#overview'>Overview</a>"
         "<a href='#verify'>Verify</a>"
-        "<a href='#roles'>Roles</a><a href='#raid'>Raid</a><a href='#automod'>Automod</a>"
+        "<a href='#roles'>Roles</a><a href='#raid'>Raid</a><a href='#abuse'>Abuse</a>"
+        "<a href='#automod'>Automod</a>"
         "<a href='#chat'>Chat</a><a href='#logs'>Logs</a></span></div>"
         "%%BODY%%"
         "</div><div class=footer>Wigglesworth Bot · keep your ?key= secret</div></div></body></html>")
@@ -323,7 +327,7 @@ def _field(key, kind, label, guild, cfg, urlkey):
 
 
 SECTION_IDS = {"🛡️ Verification": "verify", "🎭 Reaction roles": "roles",
-               "🚨 Raid guard": "raid", "🔐 Lockdown": "raid",
+               "🚨 Raid guard": "raid", "🚨 Abuse ping": "abuse", "🔐 Lockdown": "raid",
                "🤖 Automod": "automod", "💬 Chatbot": "chat",
                "📝 Logging": "logs", "🧹 Mod actions": "logs",
                "📋 Whitelist": "raid"}
