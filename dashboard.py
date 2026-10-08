@@ -384,15 +384,18 @@ def _rolemenu_block(guild, urlkey):
             f"<input type=hidden name=idx value={i}>"
             f"<button class=danger>Delete</button></form></div>")
     roles = "".join(
-        f"<label class=pill><input type=checkbox name=roles value={r.id}> {r.name}</label>"
-        for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)[:25]
-        if not r.is_default() and not r.managed and not r.permissions.administrator)
+        f"<label class=pill><input type=checkbox name=roles value={r.id}> {_esc(r.name)}"
+        f"{' ⚠️ADMIN' if r.permissions.administrator else ''}</label>"
+        for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)
+        if not r.is_default() and not r.managed)
     chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
     return (("".join(rows) or "<p><small>No menus yet.</small></p>")
             + f"<form method=post action='/api/rolemenu?key={urlkey}'>"
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='add'>"
-            f"<select name=channel>{chans}</select><br>{roles}<br>"
+            f"<select name=channel>{chans}</select><br>"
+            f"<div style='max-height:220px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;"
+            f"padding:6px 0'>{roles}</div><br>"
             f"<button>➕ New menu</button></form>")
 
 
