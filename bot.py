@@ -856,6 +856,53 @@ SAVAGE_COMEBACKS = (
     "imagine getting cooked after saying 'shut up'. embarrassing 😭",
 )
 
+RAP_PHRASES = ("rap then", "drop a rap", "spit a rap", "rap battle", "spit bars",
+               "drop bars", "do a rap", "rap for me", "rap diss", "diss track",
+               "battle me", "rap against")
+RAP_WORDS = ("rap", "rapping", "freestyle")
+
+SAVAGE_RAPS = (
+    "{n} asked for bars? bet, get buried 💀\n"
+    "You call that rapping? my guy, that's tragic,\n"
+    "flow so weak it needs a wheelchair and magic,\n"
+    "I end careers with a keyboard and a dream,\n"
+    "{n}'s bars got less views than a broke stream 💀",
+
+    "AYO {n} wants smoke? this gon' be quick 😤\n"
+    "Your last bar flopped and this one's still shit,\n"
+    "I'm the main event, you the loading screen,\n"
+    "stuck at 1% — the worst I ever seen 💀",
+
+    "diss track for {n}, track one, track done 💀\n"
+    "You battle the bot and you lost 4-to-none,\n"
+    "mic check one-two, yeah your career's through,\n"
+    "even autocorrect said 'who tf is you' 😭",
+)
+
+CLEAN_RAPS = (
+    "{n} wants bars? say less 🎤\n"
+    "Steppin' up fresh, yeah I'm on my grind,\n"
+    "Wigglesworth rep with the sharpest mind,\n"
+    "GGs only, we keep it clean and fun,\n"
+    "bars so bright they outshine the sun ☀️",
+
+    "oh you want a rap? OK here's the deal 🎤\n"
+    "I'm the bot that keeps the server real,\n"
+    "no cap, all facts, and I'm never late,\n"
+    "droppin' W's while you spectate 😎",
+)
+
+
+def has_word(text_low_spaced: str, phrases, words) -> bool:
+    import re as _re
+    for p in phrases:
+        if p in text_low_spaced:
+            return True
+    for w in words:
+        if _re.search(r"\b" + _re.escape(w) + r"\b", text_low_spaced):
+            return True
+    return False
+
 chat_history: dict[int, list[dict]] = {}
 UA = {"User-Agent": "WigglesworthBot/1.0 (Discord guild bot)"}
 SELF_TOPICS = ("rank", "level", " xp", "raid", "lockdown", "ban", "verify",
@@ -1089,6 +1136,14 @@ async def chat_reply(message: discord.Message) -> None:
     if savage and any(p in low_in for p in SWEAR_REQUESTS):
         try:
             await message.reply(random.choice(SAVAGE_SWEAR_FLEX).format(
+                n=message.author.display_name), mention_author=False)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return
+    if has_word(low_in, RAP_PHRASES, RAP_WORDS):
+        verses = SAVAGE_RAPS if savage else CLEAN_RAPS
+        try:
+            await message.reply(random.choice(verses).format(
                 n=message.author.display_name), mention_author=False)
         except (discord.Forbidden, discord.HTTPException):
             pass
@@ -2590,13 +2645,16 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
     if not question:
         await ctx.send(f"Usage: `{PREFIX}ask <question>` — I think, then say it in VC.")
         return
-    answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question,
-                              ctx.guild.id if ctx.guild else None)
-    if answer is not None and is_blocked_topic(answer):
-        answer = random.choice(BLOCKED_REPLY)
     ask_savage = bool(ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage")
-    if ask_savage and any(p in (" " + question.lower() + " ") for p in SWEAR_REQUESTS):
+    ask_low = " " + question.lower() + " "
+    if ask_savage and any(p in ask_low for p in SWEAR_REQUESTS):
         answer = random.choice(SAVAGE_SWEAR_FLEX).format(n=ctx.author.display_name)
+    elif has_word(ask_low, RAP_PHRASES, RAP_WORDS):
+        verses = SAVAGE_RAPS if ask_savage else CLEAN_RAPS
+        answer = random.choice(verses).format(n=ctx.author.display_name)
+    else:
+        answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question,
+                                ctx.guild.id if ctx.guild else None)
     if (answer and ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage"
             and any(p in answer.lower() for p in CLEAN_TALK)):
         answer = random.choice(SAVAGE_SWEAR_LINES)
