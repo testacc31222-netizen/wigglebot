@@ -757,6 +757,9 @@ AI_SYSTEM = os.getenv(
     "You are a chill Discord regular on the Wigglesworth gaming server, chatting with friends. "
     "Talk simple: 1-2 short sentences, easy words, casual, a little playful. "
     "Never refuse harmless fun — jokes, roasts, game talk and trivia are all fine. "
+    "Never list, link, describe, or give patterns/keywords for adult / explicit / NSFW content, "
+    "including porn, xxx, hentai, sex cams, escorts, hookups, erotic fiction, fetish/kinky/bdsm, "
+    "adult subscriptions, or adult games. If asked for any of that, deflect briefly and change topic. "
     "Never say you are an AI. You help with verify, ranks, events.",
 ).strip()
 
@@ -767,6 +770,32 @@ REFUSALS = ("i'm sorry", "i am sorry", "sorry, i can't", "sorry but i can",
 
 def is_refusal(text: str) -> bool:
     return text.strip().lower().startswith(REFUSALS)
+
+
+BLOCKED_TOPICS = (
+    # adult / explicit — never answer, never list, never link (checked on input AND output)
+    "porn", "xxx", "hentai", "nsfw", "onlyfans", "sexcam", "sex cam",
+    "escort", "hookup", "adult", "explicit", "nude",
+    "sex stories", "sexstories", "sex", "rule 34",
+    "erotic", "fetish", "kinky", "bdsm", "webcam", "live cam",
+    "adultsubscription", "payperview", "adultgame", "sexgame",
+)
+
+
+def is_blocked_topic(text: str) -> bool:
+    import re as _re
+    low = " " + text.lower() + " "
+    for topic in BLOCKED_TOPICS:
+        if " " in topic.strip():
+            if topic in low:
+                return True
+        elif _re.search(r"\b" + _re.escape(topic) + r"\b", low):
+            return True
+    return False
+
+
+BLOCKED_REPLY = ("nope — not doing that one here. 😶", "hard pass on that topic.",
+                 "yeah that's a no from me. ask something else!")
 
 chat_history: dict[int, list[dict]] = {}
 UA = {"User-Agent": "WigglesworthBot/1.0 (Discord guild bot)"}
@@ -972,9 +1001,17 @@ async def chat_reply(message: discord.Message) -> None:
         return  # locked to another channel
     text = message.content.replace(f"<@{bot.user.id}>", "").replace(
         f"<@!{bot.user.id}>", "").strip()
+    if is_blocked_topic(text):
+        try:
+            await message.reply(random.choice(BLOCKED_REPLY), mention_author=False)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return
     try:
         async with message.channel.typing():
             answer = await ai_reply(message.channel.id, message.author.display_name, text)
+            if answer is not None and is_blocked_topic(answer):
+                answer = random.choice(BLOCKED_REPLY)
             if answer is None or is_refusal(answer):
                 base = _fallback_reply(message.author.display_name, text)
                 low_q = (" " + text.lower() + " ")
@@ -985,6 +1022,8 @@ async def chat_reply(message: discord.Message) -> None:
                     answer = base
             if not answer or not answer.strip():
                 answer = _fallback_reply(message.author.display_name, text)
+            if is_blocked_topic(answer):
+                answer = random.choice(BLOCKED_REPLY)
             answer = sanitize_mentions(answer)
             await asyncio.sleep(min(len(answer) / 150, 1.0))
         try:
@@ -2390,6 +2429,8 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
         await ctx.send(f"Usage: `{PREFIX}ask <question>` — I think, then say it in VC.")
         return
     answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question)
+    if answer is not None and is_blocked_topic(answer):
+        answer = random.choice(BLOCKED_REPLY)
     if not answer or is_refusal(answer):
         base = _fallback_reply(ctx.author.display_name, question)
         low_q = (" " + question.lower() + " ")
@@ -2400,6 +2441,8 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
             answer = base
     if not answer or not answer.strip():
         answer = _fallback_reply(ctx.author.display_name, question)
+    if is_blocked_topic(answer):
+        answer = random.choice(BLOCKED_REPLY)
     answer = sanitize_mentions(answer)
     await ctx.send(answer[:1900])
     status = await speak_text(ctx.guild, answer[:300])
