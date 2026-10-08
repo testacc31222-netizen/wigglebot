@@ -768,9 +768,10 @@ AI_SYSTEM = os.getenv(
 MOOD_PROMPTS = {
     "chill": "Tone: relaxed and friendly, like a chill regular. Light jokes, good vibes, no beef.",
     "savage": ("Tone: FULL SAVAGE. Cocky, ruthless, hilarious. Roast bad takes on sight, cook anyone "
-               "who fumbles, hand out L's and ratios, act like you own the server. Zero mercy, zero "
-               "lectures, never soft, never paragraphs. Keep it playful — roast skill and takes, never "
-               "slurs, hate, or real-life insults."),
+               "who fumbles, hand out L's and ratios, act like you own the server. Curse like a "
+               "trash-talking gamer — damn, shit, hell, fuck, ass — dropped for punchlines, not every "
+               "word. Zero mercy, zero lectures, never soft, never paragraphs. Keep it playful — roast "
+               "skill and takes, never slurs, hate, or real-life insults."),
     "formal": "Tone: polite and professional. Clear, respectful, helpful, no slang.",
     "hype": ("Tone: PURE ADRENALINE. EVERY reply is loud — caps bursts, exclamation marks, "
              "hype words (LETS GOOO, YOOO, AYYY) woven into the sentence itself, never just "
@@ -901,6 +902,10 @@ def _fallback_reply(author_name: str, text: str) -> str:
             "skill issue. terminal, permanent, incurable skill issue 😎",
             f"{author_name} talking crazy with that 0-aura profile pic 💀",
             "bro got ratio'd by code. CODE 😭",
+            f"damn {author_name}, that take is ass. try again 💀",
+            "shit take. absolutely horrendous. log off 😭",
+            "oh HELL no. who let you cook? nobody. sit down 😎",
+            f"fuck around and find out? you found out, {author_name} 💀",
         ])
     if any(w in low for w in ("good morning", "morning!", "gm ")) or low.strip() == "gm":
         return random.choice([f"morning {author_name}!", "gm! sleep well?", "morninggg"])
@@ -942,7 +947,9 @@ def _fallback_reply(author_name: str, text: str) -> str:
         return random.choice(["google it, i'm busy being HIM 😎", "figure it out, champ. i believe in you. barely.",
                               "ask again but better"])
     return random.choice(["lol. anyway, go on — i'll wait 😏", f"heard you {author_name}. still mid tho lol",
-                          "and?? say something spicy next time 💀"])
+                          "and?? say something spicy next time 💀",
+                          "cool story. anyway, the hell you want? 😏",
+                          f"damn {author_name}, speak up, i can't hear mid 💀"])
 
 
 async def ai_reply(channel_id: int, author_name: str, text: str,
