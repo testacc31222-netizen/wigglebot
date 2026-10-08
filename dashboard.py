@@ -98,7 +98,7 @@ box-shadow:0 30px 80px rgba(0,0,0,.55);animation:rise .5s ease both}
 .topbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:9px;font-weight:900;font-size:17px}
 .brand .orb{width:26px;height:26px;border-radius:50%;
-background:conic-gradient(from 40deg,#a3e635,#7c3aed,#22d3ee,#a3e635);animation:spin 9s linear infinite}
+background:#1B2224;border:1px solid #283033}
 @keyframes spin{to{transform:rotate(360deg)}}
 .pills{display:flex;gap:7px;flex-wrap:wrap;margin-left:6px}
 .pills a{color:#b9b9cf;text-decoration:none;font-size:13px;padding:7px 15px;border-radius:20px;background:#17171f;transition:all .18s}
@@ -124,7 +124,7 @@ animation:rise .55s ease both}
 .card h3{margin:16px 0 6px;font-size:12px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px}
 .legend{display:flex;gap:14px;font-size:12px;color:#8b8b9e;margin-bottom:8px}
 .dot{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:5px}
-.dot.g{background:#a3e635}.dot.p{background:#7c3aed}.dot.gr{background:#55556a}
+.dot.g{background:#3fb96f}.dot.p{background:#27C4CC}.dot.gr{background:#55556a}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid #1b1b27}
 .row:first-of-type{border-top:0}.row label{font-size:14px}.row small{display:block;color:#8b8b9e;font-size:12px}
 button,select{background:#fff;color:#111;border:0;border-radius:20px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px;transition:transform .15s}
@@ -139,7 +139,7 @@ select,input[type=text]{background:#17171f;color:#eee;border:1px solid #2c2c44;b
 .lb{display:flex;align-items:center;gap:10px;margin:9px 0}
 .lb .who{width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
 .lb .track{flex:1;height:9px;background:#23232f;border-radius:6px;overflow:hidden}
-.lb .fill{height:100%;background:linear-gradient(90deg,#a3e635,#7c3aed);border-radius:6px;
+.lb .fill{height:100%;background:#27C4CC;border-radius:6px;
 animation:fill 1s ease both}
 @keyframes fill{from{width:0}}
 .lb .xp{font-size:12px;color:#8b8b9e;min-width:74px;text-align:right}
@@ -150,37 +150,37 @@ animation:fill 1s ease both}
 .heat{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-top:4px}
 .heat i{aspect-ratio:1.4;border-radius:5px;background:#23232f;animation:pop .4s ease both}
 @keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
-.heat i.l1{background:#2e1065}.heat i.l2{background:#5b21b6}.heat i.l3{background:#7c3aed}
-.heat i.l4{background:#a855f7}.heat i.l5{background:#c084fc}
+.heat i.l1{background:#134E4A}.heat i.l2{background:#0F766E}.heat i.l3{background:#14B8A6}
+.heat i.l4{background:#2DD4BF}.heat i.l5{background:#5EEAD4}
 form{margin:0}.footer{text-align:center;color:#55556e;font-size:12px;padding:22px}
 /* ===== Wigglesworth control-center theme ===== */
-:root{--bg:#07070d;--bg2:#0b0b14;--card:#11111c;--line:#22222f;--line2:#2c2c44;
---txt:#f2f2f8;--mut:#8b8b9e;--mut2:#55556e;--acc:#7c3aed;--accsoft:rgba(124,58,237,.14);
+:root{--bg:#0B0F10;--bg2:#0D1112;--card:#101516;--line:#283033;--line2:#283033;
+--txt:#E6EAEB;--mut:#A0ADB2;--mut2:#718087;--acc:#27C4CC;--accsoft:rgba(39,196,204,.10);
 --grn:#4ade80;--red:#f87171}
 body{background:var(--bg)}
 .app{display:flex;min-height:100vh}
-.sidebar{width:248px;flex:0 0 248px;position:sticky;top:0;height:100vh;overflow-y:auto;
-background:#0a0a12;border-right:1px solid var(--line);padding:20px 14px;display:flex;flex-direction:column;gap:4px}
-.sbrand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px}
+.sidebar{width:212px;flex:0 0 212px;position:sticky;top:0;height:100vh;overflow-y:auto;
+background:#0D1112;border-right:1px solid var(--line);padding:16px 10px;display:flex;flex-direction:column;gap:2px}
+.sbrand{display:flex;align-items:center;gap:10px;padding:4px 8px 14px}
 .sbrand .orb{width:32px;height:32px;border-radius:50%;flex:0 0 32px;
-background:conic-gradient(from 40deg,#a3e635,#7c3aed,#22d3ee,#a3e635)}
-.sbrand b{font-size:15px;display:block}.sbrand small{color:var(--mut);font-size:11px;display:block}
-.snavlabel{font-size:10px;letter-spacing:1.2px;color:var(--mut2);padding:12px 10px 4px;font-weight:800}
-.snav{display:flex;align-items:center;gap:10px;color:#b9b9cf;text-decoration:none;font-size:13.5px;
-padding:9px 12px;border-radius:10px;border:1px solid transparent}
-.snav .ic{width:20px;text-align:center}
-.snav:hover{background:#14141f;color:#fff}
-.snav.active{background:var(--accsoft);border-color:rgba(124,58,237,.35);color:#fff}
+background:#1B2224;border:1px solid #283033}
+.sbrand b{font-size:14px;display:block}.sbrand small{color:var(--mut);font-size:11px;display:block}
+.snavlabel{font-size:10px;letter-spacing:1.2px;color:var(--mut2);padding:10px 10px 3px;font-weight:800}
+.snav{display:flex;align-items:center;gap:9px;color:#A0ADB2;text-decoration:none;font-size:13px;
+padding:7px 10px;border-radius:8px;border-left:2px solid transparent}
+.snav .ic{width:18px;text-align:center}
+.snav:hover{background:#141A1C;color:#fff}
+.snav.active{background:var(--accsoft);border-left-color:var(--acc);color:#fff}
 .servers{margin-top:auto;border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:6px}
-.srv{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:10px;color:#cfcfe0;text-decoration:none;font-size:13px}
-.srv:hover{background:#14141f}
-.srv img,.srv .noav{width:28px;height:28px;border-radius:50%;flex:0 0 28px}
-.srv .noav{background:linear-gradient(135deg,#7c3aed,#22d3ee);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff}
-.main{flex:1;min-width:0;padding:0 28px 48px;max-width:1180px}
-.topbar2{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:14px 0;
-background:linear-gradient(var(--bg) 78%,transparent)}
+.srv{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;color:#cfcfe0;text-decoration:none;font-size:12.5px}
+.srv:hover{background:#141A1C}
+.srv img,.srv .noav{width:26px;height:26px;border-radius:50%;flex:0 0 26px}
+.srv .noav{background:#1B2224;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff}
+.main{flex:1;min-width:0;padding:0 24px 40px;max-width:1180px}
+.topbar2{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:12px 0;
+background:var(--bg)}
 .topbar2 .crumb{font-size:12px;color:var(--mut2)}
-.topbar2 h1{font-size:19px;font-weight:800}
+.topbar2 h1{font-size:17px;font-weight:700}
 .tspace{flex:1}
 .iconbtn{width:36px;height:36px;border-radius:10px;background:var(--card);border:1px solid var(--line);
 color:#cfcfe0;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
@@ -197,36 +197,36 @@ background:var(--card);border:1px solid var(--line);border-radius:20px;padding:7
 .pagehead{display:flex;align-items:baseline;gap:12px;margin:26px 2px 12px;flex-wrap:wrap}
 .pagehead h2{font-size:22px;font-weight:800}
 .pagehead p{color:var(--mut);font-size:13px}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.gridstats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:0 0 14px;
-box-shadow:0 18px 50px rgba(0,0,0,.45)}
-.card h2{font-size:15px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center}
-.card .sub{color:var(--mut);font-size:12px;margin-bottom:10px}
-.card h3{margin:16px 0 6px;font-size:11px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.8px}
-.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
-.stat .lab{font-size:10.5px;letter-spacing:1px;color:var(--mut);font-weight:800;display:flex;gap:6px;align-items:center}
-.stat .num{font-size:30px;font-weight:800;letter-spacing:-.5px;margin:6px 0 2px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.gridstats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:0 0 12px}
+.card h2{font-size:14px;font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center}
+.card .sub{color:var(--mut);font-size:12px;margin-bottom:8px}
+.card h3{margin:14px 0 4px;font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
+.stat .lab{font-size:10.5px;letter-spacing:1px;color:var(--mut);font-weight:700;display:flex;gap:6px;align-items:center}
+.stat .num{font-size:24px;font-weight:700;letter-spacing:-.5px;margin:4px 0 2px}
 .stat .tr{font-size:12px;color:var(--mut)}
 .stat .tr.up{color:var(--grn)}
-.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid #1b1b27}
-.row:first-of-type{border-top:0}.row label{font-size:13.5px}.row small{display:block;color:var(--mut);font-size:12px;font-weight:400}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line)}
+.row:first-of-type{border-top:0}.row label{font-size:13px;color:var(--txt)}.row small{display:block;color:var(--mut);font-size:12px;font-weight:400}
 .row form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-button,select{background:#fff;color:#111;border:0;border-radius:20px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px;transition:transform .15s,box-shadow .15s}
-button:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(124,58,237,.25)}
+button,select{background:#1B2224;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-weight:600;cursor:pointer;font-size:13px;transition:background .12s,border-color .12s}
+button:hover{border-color:var(--acc)}
 button:disabled{opacity:.6;cursor:wait;transform:none}
-button.danger{background:rgba(244,63,94,.14);color:#fda4af;border:1px solid rgba(244,63,94,.4)}
-button.ok{background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.4)}
-button.dim{background:#1d1d2e;color:#cfcfe0}
-button.primary{background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff}
-select,input[type=text]{background:#0e0e17;color:#eee;border:1px solid var(--line2);border-radius:10px;padding:9px 11px;font-size:13px;max-width:100%}
+button.danger{background:rgba(248,113,113,.10);color:#f87171;border:1px solid rgba(248,113,113,.4)}
+button.ok{background:rgba(74,222,128,.10);color:#4ade80;border:1px solid rgba(74,222,128,.35)}
+button.dim{background:#1B2224;color:#cfcfe0}
+button.primary{background:var(--acc);border-color:var(--acc);color:#06292b}
+button.primary:hover{background:#2bd6dd}
+select,input[type=text]{background:#0B0F10;color:#eee;border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font-size:13px;max-width:100%}
 select:focus,input[type=text]:focus{outline:none;border-color:var(--acc)}
-button.sw{position:relative;width:46px;height:26px;border-radius:20px;padding:0;background:#2a2a3d;border:1px solid var(--line2)}
-button.sw .knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#8b8b9e;transition:left .18s,background .18s}
-button.sw.on{background:rgba(124,58,237,.5);border-color:var(--acc)}
-button.sw.on .knob{left:22px;background:#fff}
-.pill{display:inline-flex;align-items:center;gap:6px;background:#1d1d2e;border:1px solid var(--line);border-radius:12px;padding:4px 11px;margin:2px;font-size:12.5px}
-.pill input{accent-color:#7c3aed}
+button.sw{position:relative;width:42px;height:24px;border-radius:20px;padding:0;background:#2a3437;border:1px solid var(--line2);flex:0 0 auto}
+button.sw .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#8b8b9e;transition:left .15s,background .15s}
+button.sw.on{background:rgba(39,196,204,.35);border-color:var(--acc)}
+button.sw.on .knob{left:20px;background:#fff}
+.pill{display:inline-flex;align-items:center;gap:6px;background:#1B2224;border:1px solid var(--line);border-radius:8px;padding:3px 10px;margin:2px;font-size:12.5px}
+.pill input{accent-color:var(--acc)}
 .lockcard{border-color:rgba(244,63,94,.45)!important;background:linear-gradient(rgba(244,63,94,.06),transparent 60%),var(--card)}
 .av{width:30px;height:30px;border-radius:50%;flex:0 0 30px}
 .rank{width:24px;color:var(--mut);font-weight:800;font-size:13px;text-align:center}
@@ -258,9 +258,45 @@ box-shadow:0 30px 80px rgba(0,0,0,.6);animation:tin .2s ease}
 .modal .mrow{display:flex;gap:10px;justify-content:flex-end}
 button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 code{background:#1d1d2e;border-radius:6px;padding:1px 7px;font-size:12px}
-.pill.hot{background:#fff;color:#111;border-color:#fff}
-.sbrand .dlogo{width:32px;height:32px;border-radius:50%;flex:0 0 32px;background:#5865F2;
-display:flex;align-items:center;justify-content:center}
+.pill.hot{background:var(--accsoft);color:var(--acc);border-color:var(--acc)}
+.sbrand .dlogo{width:32px;height:32px;border-radius:8px;flex:0 0 32px;background:#161C1E;
+border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+/* calm-theme overrides for legacy rules */
+.lb{margin:7px 0}
+.lb .track{height:6px;background:#1B2224;border-radius:4px}
+.lb .fill{background:var(--acc);border-radius:4px;animation:none}
+.lb .xp{color:var(--mut)}
+.heat i{background:#1B2224;border-radius:4px;animation:none}
+.heat i.l1{background:#134E4A}.heat i.l2{background:#0F766E}.heat i.l3{background:#14B8A6}
+.heat i.l4{background:#2DD4BF}.heat i.l5{background:#5EEAD4}
+.txn{border-top-color:var(--line)}
+.txn .tag{background:#1B2224;color:var(--mut)}
+.lockcard{border-color:rgba(248,113,113,.4)!important;background:var(--card)}
+.toast{background:#101516;box-shadow:none}
+.modal{background:#101516;box-shadow:none}
+.statpill{background:rgba(74,222,128,.10);color:#4ade80;border-color:rgba(74,222,128,.3)}
+.statpill.off{background:rgba(248,113,113,.10);color:#f87171;border-color:rgba(248,113,113,.3)}
+.empty{border-color:var(--line)}
+/* overview + charts */
+.crumb{font-size:12px;color:var(--mut2);margin-bottom:2px}
+.ovhead{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:2px 2px 12px}
+.ovhead h1{font-size:20px;font-weight:700}
+.ovhead p{color:var(--mut);font-size:13px}
+.ovhead .sp{flex:1}
+.updated{font-size:12px;color:var(--mut2)}
+.rangebar{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.rangebar a{text-decoration:none}
+.chart{width:100%;height:auto;display:block}
+.chart .grid{stroke:#1E2629;stroke-width:1}
+.chart .line{fill:none;stroke:var(--acc);stroke-width:2}
+.chart .area{fill:rgba(39,196,204,.08);stroke:none}
+.chart .alab{fill:#718087;font-size:10px}
+.evrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+.evrow:first-of-type{border-top:0}
+.evrow .dot{width:7px;height:7px;border-radius:50%;background:var(--acc);flex:0 0 7px}
+.evrow .dot.warn{background:#fbbf24}.evrow .dot.bad{background:var(--red)}
+.evrow .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.evrow .when{color:var(--mut2);font-size:12px;white-space:nowrap}
 """
 
 BASE = ("<!doctype html><html><head><meta charset=utf-8>"
@@ -483,8 +519,8 @@ document.addEventListener('click', function(e) {
 
 NAV = [
     ("OVERVIEW", [("🏠", "Dashboard", "overview")]),
-    ("MODERATION", [("🤖", "Automod", "automod"), ("🚩", "Abuse", "abuse"),
-                   ("🚨", "Raid", "raid"), ("📝", "Logs", "logs")]),
+    ("MODERATION", [("🤖", "Automod", "automod"), ("🚩", "Abuse Protection", "abuse"),
+                   ("🚨", "Raid Protection", "raid"), ("📝", "Logs", "logs")]),
     ("SERVER", [("🛡️", "Verify", "verify"), ("🎭", "Roles", "roles"),
                ("💬", "Chat", "chat")]),
     ("COMMUNITY", [("🎁", "Giveaways", "giveaways")]),
@@ -835,13 +871,14 @@ def _delta(cur_n, has_prev, prev_n):
     return f"{(cur_n - prev_n) / prev_n * 100:+.1f}% vs prior"
 
 
-def _analytics_block(guild, urlkey, days, metric):
+def _analytics_block(guild, urlkey, hours, metric):
     import time as _t
     import datetime as _dt
     from collections import Counter as _Counter
-    days = days if days in (1, 7, 30, 90) else 7
+    hours = hours if hours in (6, 12, 24, 168, 720, 2160) else 168
+    days = hours / 24
     now = _t.time()
-    start = now - days * 86400
+    start = now - hours * 3600
     evs = _evs(guild.id)
     cur = [e for e in evs if e.get("t", 0) >= start]
     prev = [e for e in evs if e.get("t", 0) < start]
@@ -854,13 +891,10 @@ def _analytics_block(guild, urlkey, days, metric):
     cmds = _ev_count(cur, "cmd")
     xp_earned = sum(int(e.get("amt", 0)) for e in cur if e.get("k") == "xp")
     xp_prev = sum(int(e.get("amt", 0)) for e in prev if e.get("k") == "xp")
-    rng = "".join(
-        f"<a href='/?key={urlkey}&days={d}#s{guild.id}-analytics' style='text-decoration:none'>"
-        f"<span class='pill{' hot' if d == days else ''}'>{'Today' if d == 1 else f'{d} Days'}</span></a>"
-        for d in (1, 7, 30, 90))
+    rng = _range_pills(urlkey, guild.id, hours, "analytics")
     mkey = metric if metric in ("messages", "commands", "xp", "mod", "joins") else "messages"
     mets = "".join(
-        f"<a href='/?key={urlkey}&days={days}&metric={m}#s{guild.id}-analytics' style='text-decoration:none'>"
+        f"<a href='/?key={urlkey}&range={_rlabel(hours)}&metric={m}#s{guild.id}-analytics' style='text-decoration:none'>"
         f"<span class='pill{' hot' if m == mkey else ''}'>{lab}</span></a>"
         for m, lab in ANALYTIC_METRICS)
     head = (f"<div class=row><label>Range<small>Period for every number below.</small></label>"
@@ -882,31 +916,34 @@ def _analytics_block(guild, urlkey, days, metric):
             + _stat("✨", "XP EARNED", f"{xp_earned:,}", _delta(xp_earned, has_prev, xp_prev))
             + _stat("⌨️", "COMMANDS USED", str(cmds), _delta(cmds, has_prev, _ev_count(prev, "cmd")))
             + "</div>")
-    nbuckets = days if days <= 31 else 12
-    span = days * 86400 / nbuckets
+    hourly = hours <= 48
+    if hourly:
+        nbuckets, span = min(int(hours), 24), 3600
+    else:
+        nbuckets, span = min(max(int(hours // 24), 2), 30), 86400
 
-    def _bi(t):
-        return min(int((t - start) // span), nbuckets - 1)
-
-    data = [0] * nbuckets
-    for e in cur:
+    def _hit(e):
         k = e.get("k")
-        hit = ((mkey == "messages" and k == "msg") or (mkey == "commands" and k == "cmd")
-               or (mkey == "mod" and k == "mod")
-               or (mkey == "joins" and k in ("join", "leave")))
-        if mkey == "xp" and k == "xp":
-            data[_bi(e.get("t", start))] += int(e.get("amt", 0))
-        elif hit:
-            data[_bi(e.get("t", start))] += 1
-    mx = max(data) or 1
-    labs = [_dt.datetime.fromtimestamp(start + (i + 0.5) * span).strftime("%a" if days <= 14 else "%m/%d")
-            for i in range(nbuckets)]
-    rows = "".join(
-        f"<div class=lb><span class=who>{lab}</span>"
-        f"<span class=track><span class=fill style='width:{int(v * 100 / mx)}%'></span></span>"
-        f"<span class=xp>{v:,}</span></div>" for lab, v in zip(labs, data))
-    out += _card("Activity", f"{dict(ANALYTIC_METRICS)[mkey]} per {'day' if days <= 31 else 'week'}.",
-                 rows or "<p><small>Nothing in this range.</small></p>", f"c-{guild.id}-anchart")
+        if mkey == "xp":
+            return k == "xp"
+        if mkey == "messages":
+            return k == "msg"
+        if mkey == "commands":
+            return k == "cmd"
+        if mkey == "mod":
+            return k == "mod"
+        return k in ("join", "leave")
+
+    data = _bucketize(cur, start, span, nbuckets, _hit)
+    labs = _bucket_labels(start, span, nbuckets, hourly)
+    unit = "hour" if hourly else "day"
+    if sum(data):
+        chart = _linechart(data, labs)
+    else:
+        chart = ("<div class=empty><b>Nothing in this range</b>"
+                 "<p>Tracking needs history first — data appears as activity happens.</p></div>")
+    out += _card("Activity", f"{dict(ANALYTIC_METRICS)[mkey]} per {unit}.",
+                 chart, f"c-{guild.id}-anchart")
     net = joins - leaves
     out += ("<div class=grid2>"
             + _card("Members", "Growth from tracked joins and leaves.",
@@ -956,7 +993,7 @@ def _analytics_block(guild, urlkey, days, metric):
     return out
 
 
-def _guild_block(guild, cfg, urlkey, days=7, metric="messages"):
+def _guild_block(guild, cfg, urlkey, hours=168, metric="messages"):
     gid = guild.id
 
     def F(keys):
@@ -1026,7 +1063,7 @@ def _guild_block(guild, cfg, urlkey, days=7, metric="messages"):
     parts.append(_page_sec(gid, "giveaways", "Giveaways", "Create and manage giveaways across your server.",
         _giveaways_block(guild, urlkey)))
     parts.append(_page_sec(gid, "analytics", "Server Analytics", "Understand what's happening across your server.",
-        _analytics_block(guild, urlkey, days, metric)))
+        _analytics_block(guild, urlkey, hours, metric)))
     return "".join(parts)
 
 
@@ -1148,43 +1185,186 @@ def _stat(ic, label, num, sub):
             f"<div class=num>{num}</div><div class=tr>{sub}</div></div>")
 
 
-def _overview(b, guilds, g0, cfg):
+def _parse_range(args):
+    r = (args.get("range", "") or "").strip().lower()
+    mapping = {"6h": 6, "12h": 12, "24h": 24, "7d": 168, "30d": 720, "90d": 2160}
+    if r in mapping:
+        return r, mapping[r]
+    try:
+        d = int(args.get("days", 7))
+    except (ValueError, TypeError):
+        d = 7
+    return {1: ("24h", 24), 7: ("7d", 168), 30: ("30d", 720),
+            90: ("90d", 2160)}.get(d, ("7d", 168))
+
+
+def _range_pills(urlkey, gid, curhours, anchor):
+    out = []
+    for label, h in (("6h", 6), ("12h", 12), ("24h", 24), ("7d", 168), ("30d", 720)):
+        hot = " hot" if h == curhours else ""
+        out.append(f"<a href='/?key={urlkey}&range={label}#s{gid}-{anchor}'>"
+                   f"<span class='pill{hot}'>{label}</span></a>")
+    return "".join(out)
+
+
+def _rlabel(hours):
+    return {6: "6h", 12: "12h", 24: "24h", 168: "7d", 720: "30d", 2160: "90d"}.get(hours, "7d")
+
+
+def _rel(ts):
+    import time as _t
+    try:
+        s = int(_t.time() - float(ts or 0))
+    except (ValueError, TypeError):
+        return "—"
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        return f"{s // 60}m ago"
+    if s < 86400:
+        return f"{s // 3600}h ago"
+    return f"{s // 86400}d ago"
+
+
+def _linechart(data, labels):
+    w, h, pad = 600, 170, 34
+    n = len(data)
+    mx = max(data) if data else 0
+    if mx <= 0:
+        mx = 1
+    def X(i):
+        return pad + i * (w - 2 * pad) / max(n - 1, 1)
+    def Y(v):
+        return h - pad - (v / mx) * (h - 2 * pad - 16)
+    pts = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(data))
+    grid = ""
+    for f in (0, 0.5, 1.0):
+        y = h - pad - f * (h - 2 * pad - 16)
+        grid += (f"<line x1={pad} y1={y:.1f} x2={w - pad} y2={y:.1f} class=grid/>"
+                 f"<text x=2 y={y + 3:.1f} class=alab>{mx * f:,.0f}</text>")
+    xl = ""
+    step = max(1, n // 6)
+    for i in range(0, n, step):
+        xl += f"<text x={X(i):.1f} y={h - 8} text-anchor=middle class=alab>{labels[i]}</text>"
+    area = f"{pad},{h - pad} " + pts + f" {w - pad},{h - pad}"
+    return (f"<svg class=chart viewBox='0 0 {w} {h}' role=img>"
+            f"{grid}<polygon points='{area}' class=area/>"
+            f"<polyline points='{pts}' class=line/>{xl}</svg>")
+
+
+def _bucketize(evs, start, span, nbuckets, pred):
+    data = [0] * nbuckets
+    for e in evs:
+        if pred(e):
+            i = min(int((e.get("t", start) - start) // span), nbuckets - 1)
+            if i >= 0:
+                data[i] += e.get("amt", 1) if e.get("k") == "xp" else 1
+    return data
+
+
+def _bucket_labels(start, span, nbuckets, hourly):
+    import datetime as _dt
+    out = []
+    for i in range(nbuckets):
+        ts = start + (i + 0.5) * span
+        d = _dt.datetime.fromtimestamp(ts)
+        out.append(d.strftime("%H:00") if hourly else d.strftime("%a" if span < 7 * 86400 else "%m/%d"))
+    return out
+
+
+def _recent_events(guild, limit=6):
+    evs = [e for e in _evs(guild.id) if e.get("k") == "mod"]
+    evs.sort(key=lambda e: e.get("t", 0), reverse=True)
+    rows = ""
+    for e in evs[:limit]:
+        a = e.get("action", "?")
+        dot = "bad" if a in ("ban", "kick", "raid") else ("warn" if a in ("timeout", "mute") else "")
+        rows += (f"<div class=evrow><span class='dot {dot}'></span>"
+                 f"<span class=t style='text-transform:capitalize'>{_esc(a)}</span>"
+                 f"<span class=when>{_rel(e.get('t', 0))}</span></div>")
+    if not rows:
+        return ("<div class=empty><b>No moderation events yet</b>"
+                "<p>Bans, mutes and lockdowns will appear here once tracked.</p></div>")
+    return rows
+
+
+def _overview(b, guilds, g0, cfg, urlkey, hours):
+    import time as _t
+    import datetime as _dt
+    now = _t.time()
+    updated = _dt.datetime.fromtimestamp(now).strftime("%H:%M")
     members = [m for m in g0.members if not getattr(m, "bot", False)]
+    nbots = len(g0.members) - len(members)
+    evs = _evs(g0.id)
+    day = [e for e in evs if e.get("t", 0) >= now - 86400]
+    msgs = _ev_count(day, "msg")
+    joins = _ev_count(day, "join")
+    mods = _ev_count(day, "mod")
+    cmds = _ev_count(day, "cmd")
     xp = getattr(b, "xp_data", {}).get(str(g0.id), {})
     total_xp = sum(int(v.get("xp", 0)) for v in xp.values() if isinstance(v, dict))
     earners = sum(1 for v in xp.values() if isinstance(v, dict) and int(v.get("xp", 0)) > 0)
-    flags = [bool(cfg.get("verify_enabled")), bool(cfg.get("automod_invites")),
-             bool(cfg.get("automod_links")), bool(cfg.get("automod_spam")),
-             bool(cfg.get("automod_caps")), bool(cfg.get("automod_emoji")),
-             bool(cfg.get("chat_enabled", True)), bool(cfg.get("autoreact", True)),
-             cfg.get("raid_action", "ban") != "none", bool(cfg.get("qotd_channel_id"))]
-    on = sum(1 for f in flags if f)
-    health_items = [("Verification", bool(cfg.get("verify_enabled"))),
-                    ("Invite filter", bool(cfg.get("automod_invites"))),
-                    ("Chatbot", bool(cfg.get("chat_enabled", True))),
-                    ("Automod", any(cfg.get(k) for k in ("automod_links", "automod_spam",
-                                                         "automod_caps", "automod_emoji"))),
-                    ("Raid protection", cfg.get("raid_action", "ban") != "none")]
-    hon = sum(1 for _, s in health_items if s)
     top = sorted(((int(v.get("xp", 0)), uid) for uid, v in xp.items()
                   if isinstance(v, dict)), reverse=True)[:1]
     topname = ""
     if top:
         m = g0.get_member(int(top[0][1]))
-        topname = f" · top: {(m.display_name if m else '—')}"
+        topname = _esc(m.display_name) if m else "—"
+    hourly = hours <= 48
+    if hourly:
+        nbuckets, span = min(int(hours), 24), 3600
+    else:
+        nbuckets, span = min(max(int(hours // 24), 2), 30), 86400
+    start = now - nbuckets * span
+    data = _bucketize(evs, start, span, nbuckets, lambda e: e.get("k") == "msg")
+    labs = _bucket_labels(start, span, nbuckets, hourly)
     stats = "".join([
-        _stat("👥", "SERVER MEMBERS", f"{len(members)}", f"{len(g0.members) - len(members)} bots"),
-        _stat("✨", "TOTAL XP", f"{total_xp:,}", f"across {earners} earners{topname}"),
-        _stat("🏆", "XP EARNERS", f"{earners}", f"of {len(members)} members"),
-        _stat("🧩", "ACTIVE FEATURES", f"{on}/10", "tracked systems on"),
-        _stat("💚", "SERVER HEALTH", f"{hon * 20}%", f"{hon}/5 systems on"),
+        _stat("👥", "SERVER MEMBERS", f"{len(members)}", f"{nbots} bots"),
+        _stat("💬", "MESSAGES", f"{msgs:,}", "last 24 hours"),
+        _stat("📥", "NEW MEMBERS", f"{joins}", "last 24 hours"),
+        _stat("🛡️", "MOD ACTIONS", f"{mods}", "last 24 hours"),
     ])
-    return (f"<section class=page id='s{g0.id}-overview'><div class=pagehead>"
-            f"<h2>Welcome back, boss</h2><p>Here's what's happening across your server.</p>"
-            f"<span class=pill>🛡️ All systems nominal</span></div>"
+    left = (
+        f"<div class=row><label>Total XP<small>All-time across the server.</small></label>"
+        f"<span class=pill>{total_xp:,}</span></div>"
+        f"<div class=row><label>XP earners<small>Members holding XP.</small></label>"
+        f"<span class=pill>{earners}</span></div>"
+        f"<div class=row><label>Top member<small>Highest XP right now.</small></label>"
+        f"<span class=pill>{topname or '—'}</span></div>"
+        f"<div class=row><label>Commands used<small>Bot commands, last 24 hours.</small></label>"
+        f"<span class=pill>{cmds}</span></div>")
+    prot = cfg.get("raid_action", "ban") != "none"
+    am_on = sum(1 for k in ("automod_invites", "automod_links", "automod_spam",
+                            "automod_caps", "automod_emoji") if cfg.get(k))
+    right = (
+        f"<div class=row><label>Raid protection<small>Join-spike response.</small></label>"
+        f"<span class='statpill {'on' if prot else 'off'}'>{'ON' if prot else 'OFF'}</span></div>"
+        f"<div class=row><label>Automod filters<small>Content filters enabled.</small></label>"
+        f"<span class=pill>{am_on}/5 on</span></div>"
+        f"<div class=row><label>Verification<small>New-member gate.</small></label>"
+        f"<span class='statpill {'on' if cfg.get('verify_enabled') else 'off'}'>"
+        f"{'ON' if cfg.get('verify_enabled') else 'OFF'}</span></div>"
+        f"<h3>Recent events</h3>{_recent_events(g0)}")
+    return (f"<section class=page id='s{g0.id}-overview'>"
+            f"<div class=crumb>Wigglesworth / {_esc(g0.name)} / Overview</div>"
+            f"<div class=ovhead><div><h1>Overview</h1>"
+            f"<p>Monitor your server activity, bot status, and moderation at a glance.</p></div>"
+            f"<div class=sp></div><span class=updated>Updated {updated}</span>"
+            f"<button class=dim onclick='location.reload()'>↻ Refresh</button></div>"
             f"<div class=gridstats>{stats}</div>"
-            f"<div class=grid3>{_health(health_items)}{_leaders(b, g0)}{_weekheat(b, guilds)}</div>"
-            f"</section>")
+            + _card("Server activity",
+                    "Messages over the selected range.",
+                    f"<div class=rangebar>{_range_pills(urlkey, g0.id, hours, 'overview')}</div>"
+                    f"{_linechart(data, labs)}"
+                    if sum(data) else
+                    f"<div class=rangebar>{_range_pills(urlkey, g0.id, hours, 'overview')}</div>"
+                    f"<div class=empty><b>No activity in this range</b>"
+                    f"<p>Tracking needs history first — numbers appear as messages happen.</p></div>",
+                    f"c-{g0.id}-ovchart")
+            + f"<div class=grid2>"
+            + _card("Server", "Activity and account statistics.", left, f"c-{g0.id}-ovserver")
+            + _card("Moderation", "Protection status and recent events.", right, f"c-{g0.id}-ovmod")
+            + "</div></section>")
 
 
 def _settings_page(b, disc):
@@ -1343,15 +1523,11 @@ def create_app():
         if not glist:
             return _page("No servers yet.")
         g0 = glist[0]
-        try:
-            days = int(request.args.get("days", 7))
-        except (ValueError, TypeError):
-            days = 7
-        days = days if days in (1, 7, 30, 90) else 7
+        rlabel, hours = _parse_range(request.args)
         metric = request.args.get("metric", "messages")
-        body = _overview(b, glist, g0, b.get_config(g0.id))
+        body = _overview(b, glist, g0, b.get_config(g0.id), key, hours)
         for g in glist:
-            body += _guild_block(g, b.get_config(g.id), key, days, metric)
+            body += _guild_block(g, b.get_config(g.id), key, hours, metric)
         disc = _disc()
         body += _settings_page(b, disc)
         return _page(body, _sidebar(g0, glist), _topbar(bool(disc), len(glist)))
