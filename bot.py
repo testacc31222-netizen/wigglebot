@@ -956,6 +956,15 @@ def looks_like_question(text: str) -> bool:
          "search ", "google ", "look up ", "lookup ")))
 
 
+def sanitize_mentions(text: str) -> str:
+    """Never let the bot fire mass pings, no matter what users ask."""
+    import re as _re
+    text = _re.sub(r"@\s*everyone", "everyone", text, flags=_re.I)
+    text = _re.sub(r"@\s*here", "here", text, flags=_re.I)
+    text = _re.sub(r"<@&(\d+)>", r"(role \1)", text)  # role pings -> plain text
+    return text
+
+
 async def chat_reply(message: discord.Message) -> None:
     cfg = get_config(message.guild.id)
     allowed = cfg.get("chat_channel_id")
@@ -976,6 +985,7 @@ async def chat_reply(message: discord.Message) -> None:
                     answer = base
             if not answer or not answer.strip():
                 answer = _fallback_reply(message.author.display_name, text)
+            answer = sanitize_mentions(answer)
             await asyncio.sleep(min(len(answer) / 150, 1.0))
         try:
             await message.reply(answer[:1900], mention_author=False)
@@ -1114,7 +1124,7 @@ async def teach_responder(message: discord.Message) -> None:
         return
     teach_cd[message.guild.id][message.author.id] = now
     try:
-        await message.reply(mood_wrap(triggers[hit], message.guild.id)[:1900],
+        await message.reply(mood_wrap(sanitize_mentions(triggers[hit]), message.guild.id)[:1900],
                             mention_author=False)
     except (discord.Forbidden, discord.HTTPException):
         pass
@@ -2390,6 +2400,7 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
             answer = base
     if not answer or not answer.strip():
         answer = _fallback_reply(ctx.author.display_name, question)
+    answer = sanitize_mentions(answer)
     await ctx.send(answer[:1900])
     status = await speak_text(ctx.guild, answer[:300])
     if status != "speaking":
