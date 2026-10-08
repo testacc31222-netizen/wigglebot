@@ -162,7 +162,60 @@ BASE = ("<!doctype html><html><head><meta charset=utf-8>"
 
 
 def _page(body: str) -> str:
-    return BASE.replace("%%BODY%%", body)
+    return BASE.replace("%%BODY%%", body).replace("</body>", JS + "</body>")
+
+
+JS = '''
+<script>
+document.addEventListener('submit', function(e) {
+  var f = e.target;
+  if (!f || f.tagName !== 'FORM' || (f.method || '').toLowerCase() !== 'post') return;
+  e.preventDefault();
+  var btn = f.querySelector('button');
+  var orig = btn ? btn.textContent : '';
+  var isToggle = orig === 'Turn on' || orig === 'Turn off';
+  if (btn) { btn.disabled = true; btn.textContent = '\\u23f3\\u2026'; }
+  fetch(f.action, {method: 'POST', body: new FormData(f), credentials: 'same-origin'})
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r; })
+    .then(function() {
+      var path = '';
+      try { path = new URL(f.action, location.origin).pathname; }
+      catch (err) { path = f.getAttribute('action') || ''; }
+      if (path.indexOf('/api/mod') === 0 || path.indexOf('/api/whitelist') === 0 ||
+          path.indexOf('/api/rolemenu') === 0) {
+        var card = f.closest('.card');
+        if (card && card.id) { try { location.hash = card.id; } catch (err2) {} }
+        location.reload();
+        return;
+      }
+      if (isToggle) {
+        var val = f.querySelector('input[name=value][type=hidden]');
+        var row = f.parentElement;
+        var badge = row ? row.querySelector('.badge') : null;
+        if (val && badge) {
+          var nowOn = val.value === '0';
+          val.value = nowOn ? '1' : '0';
+          badge.textContent = nowOn ? 'OFF' : 'ON';
+          badge.className = 'badge ' + (nowOn ? 'off' : 'on');
+        }
+        if (btn) {
+          var flipped = orig === 'Turn on' ? 'Turn off' : 'Turn on';
+          btn.textContent = '\\u2713 ' + flipped;
+          setTimeout(function() { btn.textContent = flipped; btn.disabled = false; }, 1200);
+        }
+        return;
+      }
+      if (btn) {
+        btn.textContent = '\\u2713 Saved';
+        setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 1200);
+      }
+    })
+    .catch(function() {
+      if (btn) { btn.textContent = '\\u274c Failed'; btn.disabled = false; }
+    });
+});
+</script>
+'''
 
 
 def _role_opts(guild, current):
@@ -383,11 +436,19 @@ def _rolemenu_block(guild, urlkey):
             f"<input type=hidden name=action value='delete'>"
             f"<input type=hidden name=idx value={i}>"
             f"<button class=danger>Delete</button></form></div>")
-    roles = "".join(
-        f"<label class=pill><input type=checkbox name=roles value={r.id}> {_esc(r.name)}"
-        f"{' ⚠️ADMIN' if r.permissions.administrator else ''}</label>"
-        for r in sorted(guild.roles, key=lambda r: r.position, reverse=True)
-        if not r.is_default() and not r.managed)
+    boxes = []
+    for r in sorted(guild.roles, key=lambda r: r.position, reverse=True):
+        if r.is_default() or r.managed:
+            continue
+        if r.permissions.administrator:
+            boxes.append(
+                f"<label class=pill title='Admin roles cannot be self-served'>"
+                f"<input type=checkbox disabled> {_esc(r.name)} (ADMIN)</label>")
+        else:
+            boxes.append(
+                f"<label class=pill><input type=checkbox name=roles value={r.id}> "
+                f"{_esc(r.name)}</label>")
+    roles = "".join(boxes)
     chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
     return (("".join(rows) or "<p><small>No menus yet.</small></p>")
             + f"<form method=post action='/api/rolemenu?key={urlkey}'>"
@@ -395,7 +456,8 @@ def _rolemenu_block(guild, urlkey):
             f"<input type=hidden name=action value='add'>"
             f"<select name=channel>{chans}</select><br>"
             f"<div style='max-height:220px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;"
-            f"padding:6px 0'>{roles}</div><br>"
+            f"padding:6px 0'>{roles}</div>"
+            f"<br><small>Max 25 roles per menu (Discord limit) — make another menu for the rest.</small><br>"
             f"<button>➕ New menu</button></form>")
 
 
