@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+
+_STARTED = time.time()
 
 DASHBOARD_KEY = os.environ.get("DASHBOARD_KEY", "")
 PORT = int(os.environ.get("PORT", "8080") or 8080)
@@ -239,6 +242,22 @@ padding:11px 16px;font-size:13px;box-shadow:0 14px 40px rgba(0,0,0,.5);animation
 .sidebar.open{transform:none;box-shadow:30px 0 80px rgba(0,0,0,.6)}
 .burger{display:flex}.searchbox{display:none}.main{padding:0 14px 40px}.row{flex-direction:column;align-items:stretch}
 .row form{justify-content:flex-start}}
+.statpill{font-size:10.5px;font-weight:800;letter-spacing:.8px;border-radius:20px;padding:3px 12px;
+background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.35)}
+.statpill.off{background:rgba(244,63,94,.12);color:#fda4af;border-color:rgba(244,63,94,.35)}
+.statpill.warn{background:rgba(251,191,36,.12);color:#fbbf24;border-color:rgba(251,191,36,.35)}
+.row.dirty label::after{content:' ●';color:#fbbf24;font-size:11px}
+.empty{border:1px dashed var(--line2);border-radius:12px;padding:22px;text-align:center;color:var(--mut)}
+.empty b{color:var(--txt);display:block;margin-bottom:4px}
+.empty p{font-size:12.5px}
+.modalback{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px}
+.modal{background:#151522;border:1px solid var(--line2);border-radius:16px;padding:22px;max-width:380px;width:100%;
+box-shadow:0 30px 80px rgba(0,0,0,.6);animation:tin .2s ease}
+.modal h3{font-size:15px;margin-bottom:8px}
+.modal p{font-size:13px;color:var(--mut);margin-bottom:16px}
+.modal .mrow{display:flex;gap:10px;justify-content:flex-end}
+button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+code{background:#1d1d2e;border-radius:6px;padding:1px 7px;font-size:12px}
 """
 
 BASE = ("<!doctype html><html><head><meta charset=utf-8>"
@@ -260,19 +279,42 @@ def _page(body: str, sidebar: str = "", topbar: str = "") -> str:
 
 JS2 = '''
 <script>
-function toast(msg, kind) {
+function toast(msg, kind, onTap) {
   var box = document.getElementById('toasts');
-  if (!box) return;
+  if (!box) return null;
   var t = document.createElement('div');
   t.className = 'toast' + (kind ? ' ' + kind : '');
   t.textContent = msg;
+  if (onTap) {
+    t.style.cursor = 'pointer';
+    t.addEventListener('click', function() { t.remove(); onTap(); });
+  }
   box.appendChild(t);
-  setTimeout(function() { t.remove(); }, 2600);
+  setTimeout(function() { t.remove(); }, 3200);
+  return t;
 }
+function clearDirty(f) {
+  var row = f.closest ? f.closest('.row') : null;
+  if (row) row.classList.remove('dirty');
+}
+document.addEventListener('input', function(e) {
+  var f = e.target && e.target.closest ? e.target.closest('form[method=post]') : null;
+  if (!f) return;
+  var row = f.closest('.row');
+  if (row) row.classList.add('dirty');
+});
+document.addEventListener('change', function(e) {
+  var f = e.target && e.target.closest ? e.target.closest('form[method=post]') : null;
+  if (!f) return;
+  var row = f.closest('.row');
+  if (row) row.classList.add('dirty');
+});
 document.addEventListener('submit', function(e) {
   var f = e.target;
   if (!f || f.tagName !== 'FORM' || (f.method || '').toLowerCase() !== 'post') return;
   e.preventDefault();
+  if (f.getAttribute('data-confirm') && !f.dataset.confirmed) { openConfirm(f); return; }
+  delete f.dataset.confirmed;
   var btn = f.querySelector('button[type=submit],button:not([type])');
   if (!btn) btn = f.querySelector('button');
   var isSwitch = btn && btn.classList.contains('sw');
@@ -303,9 +345,11 @@ document.addEventListener('submit', function(e) {
         }
         btn.disabled = false;
         toast(on ? 'Turned off' : 'Turned on', 'ok');
+        clearDirty(f);
         return;
       }
       toast('Saved', 'ok');
+      clearDirty(f);
       if (btn) {
         btn.textContent = 'Saved';
         setTimeout(function() {
@@ -315,7 +359,10 @@ document.addEventListener('submit', function(e) {
       }
     })
     .catch(function() {
-      toast('Save failed — is the bot online?', 'err');
+      clearDirty(f);
+      toast('Unable to save settings. Tap to retry.', 'err', function() {
+        if (f.isConnected) f.requestSubmit();
+      });
       if (btn) {
         if (isSwitch) { btn.disabled = false; }
         else { btn.textContent = 'Retry'; btn.disabled = false; }
@@ -394,16 +441,50 @@ document.addEventListener('click', function(e) {
     }
   });
 })();
+function openConfirm(f) {
+  var old = document.querySelector('.modalback');
+  if (old) old.remove();
+  var back = document.createElement('div');
+  back.className = 'modalback';
+  var msg = f.getAttribute('data-confirm') || 'Are you sure?';
+  back.innerHTML = '<div class=modal><h3>Please confirm</h3><p></p>'
+    + '<div class=mrow><button type=button class=dim>Cancel</button>'
+    + '<button type=button class=danger>Confirm</button></div></div>';
+  back.querySelector('p').textContent = msg;
+  var btns = back.querySelectorAll('button');
+  btns[0].addEventListener('click', function() { back.remove(); });
+  back.addEventListener('click', function(ev) { if (ev.target === back) back.remove(); });
+  btns[1].addEventListener('click', function() {
+    back.remove();
+    f.dataset.confirmed = '1';
+    f.requestSubmit();
+  });
+  document.body.appendChild(back);
+  btns[1].focus();
+}
+document.addEventListener('click', function(e) {
+  var db = e.target.closest && e.target.closest('.menu-dup');
+  if (!db) return;
+  var card = db.closest('.card');
+  var form = card ? card.querySelector('form.rolemenu-form') : null;
+  if (!form) return;
+  var act = form.querySelector('input[name=action]');
+  var idx = form.querySelector('input[name=idx]');
+  if (act) act.value = 'duplicate';
+  if (idx) idx.value = db.getAttribute('data-idx') || '';
+  form.requestSubmit();
+});
 </script>
 '''
 
 
 NAV = [
-    ("OVERVIEW", [("🏠", "Overview", "overview")]),
+    ("OVERVIEW", [("🏠", "Dashboard", "overview")]),
+    ("MODERATION", [("🤖", "Automod", "automod"), ("🚩", "Abuse", "abuse"),
+                   ("🚨", "Raid", "raid"), ("📝", "Logs", "logs")]),
     ("SERVER", [("🛡️", "Verify", "verify"), ("🎭", "Roles", "roles"),
-               ("🚨", "Raid", "raid"), ("🚩", "Abuse", "abuse"),
-               ("🤖", "Automod", "automod"), ("💬", "Chat", "chat"),
-               ("📝", "Logs", "logs")]),
+               ("💬", "Chat", "chat")]),
+    ("BOT", [("⚙️", "Settings", "settings")]),
 ]
 
 
@@ -412,7 +493,10 @@ def _sidebar(g0, guilds):
     for label, items in NAV:
         links.append(f"<div class=snavlabel>{label}</div>")
         for ic, name, anchor in items:
-            href = f"#s{g0.id}-{anchor}" if g0 else f"#{anchor}"
+            if anchor == "settings":
+                href = "#settings"
+            else:
+                href = f"#s{g0.id}-{anchor}" if g0 else f"#{anchor}"
             links.append(f"<a class=snav data-spy href='{href}'><span class=ic>{ic}</span>{name}</a>")
     srvs = []
     for g in guilds:
@@ -459,7 +543,41 @@ def _esc(s) -> str:
     return _h.escape(str(s if s is not None else ""), quote=True)
 
 
+DESCRIPTIONS = {
+    "verify_enabled": "New members must verify before chatting.",
+    "verified_role_id": "Role granted after verification.",
+    "verify_channel_id": "Channel where users verify.",
+    "join_threshold_count": "Joins that trigger raid mode.",
+    "join_threshold_seconds": "Time window for counting joins.",
+    "raid_action": "What happens to raiders. The initiator is always banned.",
+    "lockdown_duration_minutes": "Auto-unlock delay. 0 = unlock manually.",
+    "new_account_age_days": "Flag accounts younger than this.",
+    "timeout_duration_minutes": "Mute length for timeouts.",
+    "log_channel_id": "Raid hits and mod actions land here.",
+    "automod_invites": "Delete Discord invite links.",
+    "automod_links": "Delete all links server-wide.",
+    "automod_max_mentions": "Max @mentions per message.",
+    "automod_spam": "Repeated messages trigger the filter.",
+    "automod_caps": "Deletes mostly-CAPS messages.",
+    "automod_emoji": "Deletes emoji-spam messages.",
+    "automod_max_emoji": "Max emojis per message.",
+    "automod_words": "Comma-separated banned words.",
+    "link_allowed_channels": "Links stay allowed in these channels.",
+    "lobby_channel_id": "Join to create a temporary VC.",
+    "chat_channel_id": "Blank = the bot chats anywhere.",
+    "chat_enabled": "Let members chat with the bot.",
+    "bot_mood": "Bot personality. Takes effect instantly.",
+    "autoreact": "React to messages automatically.",
+    "qotd_channel_id": "Daily question posts here.",
+    "abuse_role_id": "Role pinged by .abuse.",
+    "abuse_channel_id": "Blank = wherever .abuse is used.",
+}
+
+
 def _field(key, kind, label, guild, cfg, urlkey):
+    _desc = DESCRIPTIONS.get(key, "")
+    if _desc:
+        label = label + f"<small>{_desc}</small>"
     if kind == "bool":
         state = bool(cfg.get(key))
         return (f"<div class=row><label>{label}<br><span class='badge {('on' if state else 'off')}'>"
@@ -550,12 +668,24 @@ def _section(title, anchor, inner):
     return (f"<div class=card id='{anchor}'><h2>{title}</h2>{inner}</div>" if inner else "")
 
 
-def _card(title, sub, inner, card_id="", extra_cls=""):
+def _card(title, sub, inner, card_id="", extra_cls="", pill=None):
     import re as _re
     plain = _re.sub(r"<[^>]+>", " ", inner)
     search = _esc((title + " " + sub + " " + plain)[:900])
+    head = f"<h2>{title}"
+    if pill:
+        head += f"<span class='statpill {pill[1]}'>{pill[0]}</span>"
+    head += "</h2>"
     return (f"<div class='card {extra_cls}' id='{card_id}' data-search='{search}'>"
-            f"<h2>{title}</h2>" + (f"<div class=sub>{sub}</div>" if sub else "") + inner + "</div>")
+            + head + (f"<div class=sub>{sub}</div>" if sub else "") + inner + "</div>")
+
+
+def _status(on, partial=False):
+    if on:
+        return ("ACTIVE", "on")
+    if partial:
+        return ("PARTIAL", "warn")
+    return ("OFF", "off")
 
 
 def _page_sec(gid, anchor, title, sub, cards_html):
@@ -581,45 +711,71 @@ def _guild_block(guild, cfg, urlkey):
 
     parts = [f"<section class=page id='srv-{gid}'><div class=pagehead><h2>{_esc(guild.name)}</h2>"
              f"<p>{len(guild.members)} members · {len(guild.text_channels)} text channels</p></div></section>"]
-    parts.append(_page_sec(gid, "verify", "Verify", "Gate new members and hand out the verified role.",
-        _card("Verification gate", "Who gets in and what they receive.",
-              F(["verify_enabled", "verified_role_id", "verify_channel_id"]), f"c-{gid}-verify")))
-    parts.append(_page_sec(gid, "roles", "Roles", "Self-serve role menus members opt into.",
-        _card("Reaction roles", "Menus post as embeds with toggle buttons.",
-              _rolemenu_block(guild, urlkey), f"c-{gid}-roles")))
-    parts.append(_page_sec(gid, "raid", "Raid", "Join-spike detection and automatic response.",
-        _card("Raid guard", "Thresholds and what the bot does when they trip.",
-              F(["join_threshold_count", "join_threshold_seconds", "raid_action",
-                 "lockdown_duration_minutes", "new_account_age_days",
-                 "timeout_duration_minutes"]), f"c-{gid}-raid")))
-    parts.append(_page_sec(gid, "abuse", "Abuse", "Pings, lockdowns and manual moderation.",
-        _card("Abuse ping", "Where .abuse alerts go and who they notify.",
-              F(["abuse_role_id", "abuse_channel_id"]), f"c-{gid}-abuse")
+    am_on = sum(1 for k in ("automod_invites", "automod_links", "automod_spam",
+                            "automod_caps", "automod_emoji") if cfg.get(k))
+    parts.append(_page_sec(gid, "automod", "Automod", "Automatic message filtering.",
+        _card("Automod", "Tuned per category. Switches save instantly.",
+              _automod_groups(guild, cfg, urlkey), f"c-{gid}-automod",
+              pill=(f"{am_on}/5 ON", "on" if am_on else "off"))))
+    _gr = getattr(guild, "get_role", None)
+    abuse_role = _gr(cfg.get("abuse_role_id") or 0) if _gr else None
+    abuse_armed = cfg.get("raid_action", "ban") != "none"
+    parts.append(_page_sec(gid, "abuse", "Abuse", "Security control center.",
+        _card("Abuse protection", "Alert role, channel and linked systems.",
+              F(["abuse_role_id", "abuse_channel_id"]), f"c-{gid}-abuse",
+              pill=_status(bool(abuse_role) and abuse_armed, bool(abuse_role) or abuse_armed))
+        + _card("Linked systems", "Detection, lockdown and whitelist live under Raid.",
+                f"<div class=row><label>Raid detection & thresholds"
+                f"<small>Join spikes, account age, responses</small></label>"
+                f"<a href='#c-{gid}-raid'><button type=button class=dim>Open</button></a></div>"
+                f"<div class=row><label>Lockdown & whitelist"
+                f"<small>Freeze channels, exempt users</small></label>"
+                f"<a href='#c-{gid}-lockdown'><button type=button class=dim>Open</button></a></div>",
+                f"c-{gid}-linked")))
+    parts.append(_page_sec(gid, "raid", "Raid", "Detection, response and manual controls.",
+        _card("Detection", "What counts as a raid.",
+              "<h3>Thresholds</h3>"
+              + F(["join_threshold_count", "join_threshold_seconds", "new_account_age_days"]),
+              f"c-{gid}-raid", pill=("ARMED", "on") if abuse_armed else ("OFF", "off"))
+        + _card("Response", "What the bot does when detection trips.",
+                "<h3>Actions</h3>"
+                + F(["raid_action", "timeout_duration_minutes", "lockdown_duration_minutes"]),
+                f"c-{gid}-response")
         + _card("Lockdown", "Freeze every text channel instantly. Big red button energy.",
                 _lockdown_block(guild, urlkey), f"c-{gid}-lockdown", "lockcard")
         + _card("Whitelist", "These users bypass raid actions.",
                 _whitelist_block(guild, cfg, urlkey), f"c-{gid}-whitelist")
         + _card("Mod actions", "Bulk delete, slowmode and voice control.",
                 _mod_block(guild, urlkey), f"c-{gid}-mod")))
-    parts.append(_page_sec(gid, "automod", "Automod", "Automatic message filtering.",
-        _card("Automod", "Tuned per category. Switches save instantly.",
-              _automod_groups(guild, cfg, urlkey), f"c-{gid}-automod")))
+    parts.append(_page_sec(gid, "logs", "Logs", "Where the bot reports what it does.",
+        _card("Logging", "Raid hits, lockdowns and mod actions post here. "
+                         "Falls back to the system channel when unset.",
+              F(["log_channel_id"]), f"c-{gid}-logs",
+              pill=("SET", "on") if guild.get_channel(cfg.get("log_channel_id") or 0) else ("UNSET", "off"))))
+    v_on = bool(cfg.get("verify_enabled"))
+    parts.append(_page_sec(gid, "verify", "Verify", "Gate new members and hand out the verified role.",
+        _card("Verification gate", "Who gets in and what they receive. "
+                                   "Status mirrors the live setting.",
+              F(["verify_enabled", "verified_role_id", "verify_channel_id"]), f"c-{gid}-verify",
+              pill=("ON", "on") if v_on else ("OFF", "off"))))
+    parts.append(_page_sec(gid, "roles", "Roles", "Self-serve role menus members opt into.",
+        _card("Reaction roles", "Menus post as embeds with toggle buttons.",
+              _rolemenu_block(guild, urlkey), f"c-{gid}-roles")))
     parts.append(_page_sec(gid, "chat", "Chat", "Talkative features and voice.",
-        _card("Chatbot", "Replies, mood and reactions.",
-              F(["chat_enabled", "chat_channel_id", "bot_mood", "autoreact"]), f"c-{gid}-chat")
+        _card("Chatbot", "Replies, mood and reactions. Mood applies instantly.",
+              F(["chat_enabled", "chat_channel_id", "bot_mood", "autoreact"]), f"c-{gid}-chat",
+              pill=(str(cfg.get("bot_mood", "chill")).upper(),
+                    "on" if cfg.get("chat_enabled", True) else "off"))
         + _card("Daily question", "One prompt a day to spark chat.",
                 F(["qotd_channel_id"]), f"c-{gid}-qotd")
         + _card("Voice", "Join-to-create lobbies and where the bot sits.",
                 F(["lobby_channel_id"]) + _voice_block(guild, cfg, urlkey), f"c-{gid}-voice")))
-    parts.append(_page_sec(gid, "logs", "Logs", "Where the bot reports what it does.",
-        _card("Logging", "Raid hits, mod actions and joins land here.",
-              F(["log_channel_id"]), f"c-{gid}-logs")))
     return "".join(parts)
 
 
 def _lockdown_block(guild, urlkey):
     return (f"<div class=row><label>Lock every text channel NOW</label>"
-            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<form method=post action='/api/mod?key={urlkey}' data-confirm='Lock every text channel now? Members stay muted until you unlock.'>"
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='lockdown'>"
             f"<button class=danger>🔒 LOCKDOWN</button></form></div>"
@@ -634,7 +790,7 @@ def _whitelist_block(guild, cfg, urlkey):
     users = cfg.get("whitelisted_user_ids", []) or []
     rows = "".join(
         f"<div class=row><label><code>{uid}</code></label>"
-        f"<form method=post action='/api/whitelist?key={urlkey}'>"
+        f"<form method=post action='/api/whitelist?key={urlkey}' data-confirm='Remove this user from the whitelist?'>"
         f"<input type=hidden name=guild value={guild.id}>"
         f"<input type=hidden name=action value='remove'>"
         f"<input type=hidden name=user_id value={uid}>"
@@ -650,7 +806,7 @@ def _whitelist_block(guild, cfg, urlkey):
 def _mod_block(guild, urlkey):
     chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
     return (f"<div class=row><label>Bulk delete</label>"
-            f"<form method=post action='/api/mod?key={urlkey}'>"
+            f"<form method=post action='/api/mod?key={urlkey}' data-confirm='Bulk-delete these messages? This cannot be undone.'>"
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='purge'>"
             f"<select name=channel>{chans}</select>"
@@ -695,12 +851,13 @@ def _rolemenu_block(guild, urlkey):
         rows.append(
             f"<div class=row><label>#{ch.name if ch else m.get('channel')} "
             f"<small>{len(m.get('roles', []))} roles</small></label>"
-            f"<form method=post action='/api/rolemenu?key={urlkey}'>"
+            f"<form method=post action='/api/rolemenu?key={urlkey}' data-confirm='Delete this menu? Its Discord message goes too.'>"
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='delete'>"
             f"<input type=hidden name=idx value={i}>"
             f"<button type=button class='dim menu-edit' data-idx={i} "
             f"data-channel={m.get('channel')} data-roles='{rids}'>Edit</button>"
+            f"<button type=button class='dim menu-dup' data-idx={i}>Duplicate</button>"
             f"<button class=danger>Delete</button></form></div>")
     boxes = []
     for r in sorted(guild.roles, key=lambda r: r.position, reverse=True):
@@ -716,7 +873,8 @@ def _rolemenu_block(guild, urlkey):
                 f"{_esc(r.name)}</label>")
     roles = "".join(boxes)
     chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
-    return (("".join(rows) or "<p><small>No menus yet.</small></p>")
+    return (("".join(rows) or "<div class=empty><b>No reaction menus</b>"
+             "<p>You haven't created one yet — tick roles below and hit New menu.</p></div>")
             + f"<form class=rolemenu-form method=post action='/api/rolemenu?key={urlkey}'>"
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='add'>"
@@ -770,6 +928,50 @@ def _overview(b, guilds, g0, cfg):
             f"<div class=gridstats>{stats}</div>"
             f"<div class=grid3>{_health(health_items)}{_leaders(b, g0)}{_weekheat(b, guilds)}</div>"
             f"</section>")
+
+
+def _settings_page(b, disc):
+    up = int(time.time() - _STARTED)
+    d, rem = divmod(up, 86400)
+    h, rem = divmod(rem, 3600)
+    m, _s = divmod(rem, 60)
+    uptime = (f"{d}d " if d else "") + (f"{h}h " if h or d else "") + f"{m}m"
+    lat = f"{int(disc.latency * 1000)} ms" if disc and getattr(disc, "latency", None) else "—"
+    try:
+        import discord as _d
+        dver = getattr(_d, "__version__", "?")
+    except ImportError:
+        dver = "?"
+    datafile = str(getattr(b, "DATA_FILE", "?"))
+    dexists = bool(datafile) and os.path.exists(datafile)
+    ncfg = len(getattr(b, "configs", {}) or {})
+    persistent = bool(os.environ.get("DATA_DIR"))
+    ng = len(disc.guilds) if disc else 0
+
+    def _row(label, desc, val):
+        return (f"<div class=row><label>{label}<small>{desc}</small></label>"
+                f"<span class=pill>{val}</span></div>")
+
+    status = _card("Bot status", "Live connection info. Read-only.",
+        _row("Connection", "Discord gateway state.",
+             "● Connected" if disc else "○ Offline")
+        + _row("Latency", "Gateway heartbeat round-trip.", _esc(lat))
+        + _row("Servers", "Guilds this process serves.", str(ng))
+        + _row("Prefix", "Command prefix for chat commands.", _esc(getattr(b, "PREFIX", ".")))
+        + _row("Uptime", "Time since this process started.", _esc(uptime))
+        + _row("discord.py", "Library version.", _esc(dver)), "c-settings-status")
+    persist = _card("Data & persistence", "Where settings live.",
+        _row("Config file", "Per-server settings JSON.", f"<code>{_esc(datafile)}</code>")
+        + _row("File present", "Whether the file exists on disk.",
+               "Yes" if dexists else "Missing")
+        + _row("Servers stored", "Guilds with saved settings.", str(ncfg))
+        + _row("Persistent volume", "DATA_DIR set + volume attached?",
+               "Yes" if persistent else "No — redeploys wipe settings")
+        + ("" if persistent else "<p><small>Set DATA_DIR=/app/data and attach a Railway volume, "
+                                 "or panel changes forget themselves on redeploy.</small></p>"),
+        "c-settings-data")
+    return (f"<section class=page id='settings'><div class=pagehead><h2>Settings</h2>"
+            f"<p>Bot-level info. Read-only.</p></div>{status}{persist}</section>")
 
 
 def _hero_unused(b, guilds):
@@ -888,6 +1090,7 @@ def create_app():
         for g in glist:
             body += _guild_block(g, b.get_config(g.id), key)
         disc = _disc()
+        body += _settings_page(b, disc)
         return _page(body, _sidebar(g0, glist), _topbar(bool(disc), len(glist)))
 
     @app.post("/api/config")
@@ -993,6 +1196,22 @@ def create_app():
                             b._save_rr(b.rr_data)
                     except Exception as e:
                         print("[dash] menu edit failed:", e)
+        elif action == "duplicate":
+            try:
+                idx = int(request.form.get("idx", -1))
+            except (ValueError, TypeError):
+                idx = -1
+            menus = b.rr_data.get(str(gid), [])
+            if 0 <= idx < len(menus):
+                src = menus[idx]
+                disc = _disc()
+                if disc:
+                    fut = _aio.run_coroutine_threadsafe(
+                        _make_menu(b, gid, src["channel"], list(src.get("roles", []))), disc.loop)
+                    try:
+                        fut.result(timeout=20)
+                    except Exception as e:
+                        print("[dash] menu duplicate failed:", e)
         return redirect(f"/?key={request.args.get('key', '')}")
 
     @app.post("/api/whitelist")
