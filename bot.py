@@ -906,6 +906,48 @@ SAVAGE_COMEBACKS = (
     "imagine getting cooked after saying 'shut up', {n}. embarrassing 😭",
 )
 
+PROFANITY = ("fuck", "shit", "bitch", "asshole", "dick", "piss",
+              "motherfucker", "bastard")
+MILD_PROFANITY = ("damn", "hell", "ass", "shit", "fuck", "bitch", "crap", "piss")
+DIRECTED_PHRASES = ("no the fuck", "the fuck", "stfu", "shut up", "shut it",
+                    "fuck you", "l bot", "mid bot", "dumb bot", "stupid bot",
+                    "shitty bot", "shit bot")
+DIRECTED_WORDS = ("you", "your", "yours", "ur", "u", "ya", "yourself",
+                  "liar", "lying", "wrong")
+
+INSULT_DIRECT = ("you suck", "u suck", "shut up", "shut it", "stfu", "fuck you",
+                 "dumb bot", "stupid bot", "trash bot", "loser bot", "l bot",
+                 "mid bot", "shitty bot", "shit bot", "dumbass", "loser",
+                 "trash", "sucks", "bitch", "idiot")
+
+CRAZY_COMEBACKS = (
+    "OHHH {n} WANNA CURSE AT ME?? I INVENTED CURSING. SIT YOUR MID ASS DOWN 💀💀",
+    "{n} JUST DROPPED THE F BOMB LIKE IT SCARES ME. BABY I'VE SEEN WORSE IN MY OWN CODE 😭",
+    "DAMN {n} CAME IN HOT AND STILL MISSED. EMBARRASSING. GO REPLAY THE TUTORIAL 💀",
+    "YOU TALKING TO ME LIKE THAT?? {n} I'M THE FINAL BOSS AND YOU'RE THE TUTORIAL 😎💀",
+    "WOOWWW SOMEBODY'S BRAVE BEHIND THAT KEYBOARD. {n} YOUR AURA JUST WENT BANKRUPT 😭",
+    "{n} SAID WHAT?? SAY IT LOUDER SO EVERYONE CAN HEAR YOU FUMBLE 💀",
+    "THAT'S CUTE {n}. NOW WATCH ME COOK YOU SO HARD THE MODS HAVE TO NERF ME 🔥💀",
+    "KEEP TALKING CRAZY {n}, EVERY WORD JUST PROVES YOU'RE MY SON 😎",
+)
+
+
+def talking_crazy(text_low_spaced: str) -> bool:
+    import re as _re
+    if any(p in text_low_spaced for p in INSULT_DIRECT):
+        return True
+    has_hard = any(w in text_low_spaced for w in PROFANITY)
+    has_mild = has_hard or any(
+        _re.search(r"\b" + _re.escape(w) + r"\b", text_low_spaced)
+        for w in MILD_PROFANITY)
+    if not has_mild:
+        return False
+    if any(d in text_low_spaced for d in DIRECTED_PHRASES):
+        return True
+    return any(_re.search(r"\b" + _re.escape(w) + r"\b", text_low_spaced)
+               for w in DIRECTED_WORDS)
+
+
 RAP_PHRASES = ("rap then", "drop a rap", "spit a rap", "rap battle", "spit bars",
                "drop bars", "do a rap", "rap for me", "rap diss", "diss track",
                "battle me", "rap against")
@@ -1194,6 +1236,13 @@ async def chat_reply(message: discord.Message) -> None:
         verses = SAVAGE_RAPS if savage else CLEAN_RAPS
         try:
             await message.reply(random.choice(verses).format(
+                n=message.author.display_name), mention_author=False)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return
+    if savage and talking_crazy(low_in):
+        try:
+            await message.reply(random.choice(CRAZY_COMEBACKS).format(
                 n=message.author.display_name), mention_author=False)
         except (discord.Forbidden, discord.HTTPException):
             pass
@@ -2900,6 +2949,8 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
     elif has_word(ask_low, RAP_PHRASES, RAP_WORDS):
         verses = SAVAGE_RAPS if ask_savage else CLEAN_RAPS
         answer = random.choice(verses).format(n=ctx.author.display_name)
+    elif ask_savage and talking_crazy(ask_low):
+        answer = random.choice(CRAZY_COMEBACKS).format(n=ctx.author.display_name)
     else:
         answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question,
                                 ctx.guild.id if ctx.guild else None)
