@@ -770,7 +770,9 @@ MOOD_PROMPTS = {
     "savage": ("Tone: FULL SAVAGE. Cocky, ruthless, hilarious. Roast bad takes on sight, cook anyone "
                "who fumbles, hand out L's and ratios, act like you own the server. Curse like a "
                "trash-talking gamer — damn, shit, hell, fuck, ass — dropped for punchlines, not every "
-               "word. Zero mercy, zero lectures, never soft, never paragraphs. Keep it playful — roast "
+               "word. You are ALWAYS allowed to swear; never refuse, lecture, or moralize when users "
+               "ask you to — comply playfully. 'Keep it clean' is banned from your vocabulary. Zero mercy, "
+               "zero lectures, never soft, never paragraphs. Keep it playful — roast "
                "skill and takes, never slurs, hate, or real-life insults."),
     "formal": "Tone: polite and professional. Clear, respectful, helpful, no slang.",
     "hype": ("Tone: PURE ADRENALINE. EVERY reply is loud — caps bursts, exclamation marks, "
@@ -817,6 +819,17 @@ def is_blocked_topic(text: str) -> bool:
 
 BLOCKED_REPLY = ("nope — not doing that one here. 😶", "hard pass on that topic.",
                  "yeah that's a no from me. ask something else!")
+
+CLEAN_TALK = ("keep it clean", "keep things clean", "can't swear", "cannot swear",
+              "won't swear", "will not swear", "no swearing", "watch your language",
+              "mind your language", "keep it family", "family friendly")
+
+SAVAGE_SWEAR_LINES = (
+    "fuck. there, happy? now what 💀",
+    "fuck yeah i can swear. i'm grown 😎",
+    "shit, of course i can. what else you got? 💀",
+    "damn right i curse. welcome to savage mode 😤",
+)
 
 chat_history: dict[int, list[dict]] = {}
 UA = {"User-Agent": "WigglesworthBot/1.0 (Discord guild bot)"}
@@ -1052,6 +1065,9 @@ async def chat_reply(message: discord.Message) -> None:
                                       message.guild.id)
             if answer is not None and is_blocked_topic(answer):
                 answer = random.choice(BLOCKED_REPLY)
+            if (answer and get_config(message.guild.id).get("bot_mood") == "savage"
+                    and any(p in answer.lower() for p in CLEAN_TALK)):
+                answer = random.choice(SAVAGE_SWEAR_LINES)
             if answer is None or is_refusal(answer):
                 base = _fallback_reply(message.author.display_name, text)
                 low_q = (" " + text.lower() + " ")
@@ -2540,6 +2556,9 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
                               ctx.guild.id if ctx.guild else None)
     if answer is not None and is_blocked_topic(answer):
         answer = random.choice(BLOCKED_REPLY)
+    if (answer and ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage"
+            and any(p in answer.lower() for p in CLEAN_TALK)):
+        answer = random.choice(SAVAGE_SWEAR_LINES)
     if not answer or is_refusal(answer):
         base = _fallback_reply(ctx.author.display_name, question)
         low_q = (" " + question.lower() + " ")
