@@ -535,7 +535,7 @@ async def trigger_raid(guild: discord.Guild, cfg: dict, recent_members: list[dis
         value=f"Run `{PREFIX}unlock` when safe, or wait {cfg['lockdown_duration_minutes']} min for auto-unlock.",
         inline=False,
     )
-    await send_log(guild, "@everyone ⚠️ suspected raid — lockdown active.", embed=embed)
+    await send_log(guild, "⚠️ Suspected raid — lockdown active.", embed=embed)
     await schedule_auto_unlock(guild, cfg)
 
 
