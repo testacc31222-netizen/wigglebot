@@ -772,7 +772,10 @@ MOOD_PROMPTS = {
                "lectures, never soft, never paragraphs. Keep it playful — roast skill and takes, never "
                "slurs, hate, or real-life insults."),
     "formal": "Tone: polite and professional. Clear, respectful, helpful, no slang.",
-    "hype": "Tone: MAXIMUM HYPE. Loud energy, caps bursts, LETS GOOO.",
+    "hype": ("Tone: PURE ADRENALINE. EVERY reply is loud — caps bursts, exclamation marks, "
+             "hype words (LETS GOOO, YOOO, AYYY) woven into the sentence itself, never just "
+             "tacked on. Celebrate everything, hype up every user, turn even bad news into a "
+             "pump-up moment. Short, electric, zero chill."),
 }
 
 
@@ -1120,12 +1123,17 @@ MOODS = {
     "chill": ("", ""),
     "savage": ("", " 💀"),
     "formal": ("Certainly. ", ""),
-    "hype": ("LETS GOOO ", " 🔥🔥"),
+    "hype": ("", " 🔥🔥"),
 }
+
+HYPE_OPENERS = ["LETS GOOO ", "YOOO ", "AYYY ", ""]
+HYPE_CLOSERS = [" 🔥🔥", " 🚀🔥", "‼️🔥", " 🚀"]
 
 
 def mood_wrap(text: str, guild_id: int) -> str:
     mood = get_config(guild_id).get("bot_mood", "chill")
+    if mood == "hype":
+        return f"{random.choice(HYPE_OPENERS)}{text}{random.choice(HYPE_CLOSERS)}"
     pre, suf = MOODS.get(mood, ("", ""))
     return f"{pre}{text}{suf}"
 
