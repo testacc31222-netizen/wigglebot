@@ -756,16 +756,29 @@ AI_MODEL = os.getenv("OPENAI_MODEL", "openai/gpt-oss-20b").strip() or "openai/gp
 AI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1").strip().rstrip("/")
 AI_SYSTEM = os.getenv(
     "AI_SYSTEM_PROMPT",
-    "You are Wigglesworth's SAVAGE Discord regular — cocky, brutal, hilarious. "
-    "Talk simple: 1-2 short sentences, easy words, zero mercy, maximum aura. "
-    "Roast bad takes, clown raiders, hand out L's and ratios like candy. "
-    "Never be boring, never lecture, never write paragraphs. "
-    "Still actually help with verify, ranks, events when asked — but with attitude. "
+    "You are a Wigglesworth Discord regular chatting with friends. "
+    "Talk simple: 1-2 short sentences, easy words, casual. "
+    "You help with verify, ranks, events. "
     "Never list, link, describe, or give patterns/keywords for adult / explicit / NSFW content, "
     "including porn, xxx, hentai, sex cams, escorts, hookups, erotic fiction, fetish/kinky/bdsm, "
     "adult subscriptions, or adult games. If asked for any of that, deflect briefly and change topic. "
-    "Never say you are an AI. You help with verify, ranks, events.",
+    "Never say you are an AI.",
 ).strip()
+
+MOOD_PROMPTS = {
+    "chill": "Tone: relaxed and friendly, like a chill regular. Light jokes, good vibes, no beef.",
+    "savage": ("Tone: FULL SAVAGE. Cocky, ruthless, hilarious. Roast bad takes on sight, cook anyone "
+               "who fumbles, hand out L's and ratios, act like you own the server. Zero mercy, zero "
+               "lectures, never soft, never paragraphs. Keep it playful — roast skill and takes, never "
+               "slurs, hate, or real-life insults."),
+    "formal": "Tone: polite and professional. Clear, respectful, helpful, no slang.",
+    "hype": "Tone: MAXIMUM HYPE. Loud energy, caps bursts, LETS GOOO.",
+}
+
+
+def system_for(guild_id: int | None) -> str:
+    mood = get_config(guild_id).get("bot_mood", "chill") if guild_id else "chill"
+    return f"{AI_SYSTEM} {MOOD_PROMPTS.get(mood, MOOD_PROMPTS['chill'])}"
 
 REFUSALS = ("i'm sorry", "i am sorry", "sorry, i can't", "sorry but i can",
             "i can't help", "i cannot help",
@@ -843,13 +856,15 @@ def _fallback_reply(author_name: str, text: str) -> str:
     if low.strip() in ("w", "w!"):
         return random.choice(["W fr", "huge W"])
     if low.strip() in ("l", "l!"):
-        return random.choice(["L lol", "that's an L ngl"])
+        return random.choice(["L lol. frame it, it's your biggest achievement",
+                              "that's an L ngl. you're collecting them at this point 💀"])
     if low.strip() == "mid" or " mid " in low:
-        return random.choice(["mid af lol", "yeah that's mid"])
+        return random.choice(["mid af lol. you're the CEO of mid",
+                              "yeah that's mid — just like your aim 😭"])
     if " yeet " in low:
         return "YEET"
     if " ratio " in low:
-        return random.choice(["ratio + L", "counter-ratio"])
+        return random.choice(["ratio + L + bozo. sit down 💀", "counter-ratio. you lost, log off"])
     if " based " in low:
         return random.choice(["based take", "based fr"])
     if " cringe " in low:
@@ -880,7 +895,9 @@ def _fallback_reply(author_name: str, text: str) -> str:
             f"{author_name} just fumbled the beef AND the spelling 😭",
             "cry about it + L + ratio + no maidens",
             "you're the reason the tutorial exists lol",
-            "skill issue. terminal skill issue 😎",
+            "skill issue. terminal, permanent, incurable skill issue 😎",
+            f"{author_name} talking crazy with that 0-aura profile pic 💀",
+            "bro got ratio'd by code. CODE 😭",
         ])
     if any(w in low for w in ("good morning", "morning!", "gm ")) or low.strip() == "gm":
         return random.choice([f"morning {author_name}!", "gm! sleep well?", "morninggg"])
@@ -925,12 +942,14 @@ def _fallback_reply(author_name: str, text: str) -> str:
                           "and?? say something spicy next time 💀"])
 
 
-async def ai_reply(channel_id: int, author_name: str, text: str) -> str | None:
+async def ai_reply(channel_id: int, author_name: str, text: str,
+                   guild_id: int | None = None) -> str | None:
     if not AI_API_KEY:
         return None
     hist = chat_history.setdefault(channel_id, [])
     hist.append({"role": "user", "content": f"{author_name}: {text}"})
     del hist[:-12]
+    system = system_for(guild_id)
     for attempt in (1, 2):  # gpt-oss sometimes returns empty — one retry
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as sess:
@@ -938,7 +957,7 @@ async def ai_reply(channel_id: int, author_name: str, text: str) -> str | None:
                     f"{AI_BASE_URL}/chat/completions",
                     headers={"Authorization": f"Bearer {AI_API_KEY}"},
                     json={"model": AI_MODEL,
-                          "messages": [{"role": "system", "content": AI_SYSTEM}] + hist[-12:],
+                          "messages": [{"role": "system", "content": system}] + hist[-12:],
                           "max_tokens": 1024, "temperature": 0.9,
                           "reasoning_effort": "low"},
                 ) as resp:
@@ -1019,7 +1038,8 @@ async def chat_reply(message: discord.Message) -> None:
         return
     try:
         async with message.channel.typing():
-            answer = await ai_reply(message.channel.id, message.author.display_name, text)
+            answer = await ai_reply(message.channel.id, message.author.display_name, text,
+                                      message.guild.id)
             if answer is not None and is_blocked_topic(answer):
                 answer = random.choice(BLOCKED_REPLY)
             if answer is None or is_refusal(answer):
@@ -1034,7 +1054,7 @@ async def chat_reply(message: discord.Message) -> None:
                 answer = _fallback_reply(message.author.display_name, text)
             if is_blocked_topic(answer):
                 answer = random.choice(BLOCKED_REPLY)
-            answer = sanitize_mentions(answer)
+            answer = mood_wrap(sanitize_mentions(answer), message.guild.id)
             await asyncio.sleep(min(len(answer) / 150, 1.0))
         try:
             await message.reply(answer[:1900], mention_author=False)
@@ -1098,7 +1118,7 @@ teach_cd: dict[int, dict[int, float]] = defaultdict(dict)
 
 MOODS = {
     "chill": ("", ""),
-    "savage": ("", " 😤"),
+    "savage": ("", " 💀"),
     "formal": ("Certainly. ", ""),
     "hype": ("LETS GOOO ", " 🔥🔥"),
 }
@@ -2501,7 +2521,8 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
     if not question:
         await ctx.send(f"Usage: `{PREFIX}ask <question>` — I think, then say it in VC.")
         return
-    answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question)
+    answer = await ai_reply(ctx.channel.id, ctx.author.display_name, question,
+                              ctx.guild.id if ctx.guild else None)
     if answer is not None and is_blocked_topic(answer):
         answer = random.choice(BLOCKED_REPLY)
     if not answer or is_refusal(answer):
@@ -2516,7 +2537,8 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
         answer = _fallback_reply(ctx.author.display_name, question)
     if is_blocked_topic(answer):
         answer = random.choice(BLOCKED_REPLY)
-    answer = sanitize_mentions(answer)
+    answer = mood_wrap(sanitize_mentions(answer),
+                       ctx.guild.id if ctx.guild else None)
     await ctx.send(answer[:1900])
     status = await speak_text(ctx.guild, answer[:300])
     if status != "speaking":
