@@ -30,6 +30,7 @@ def _check(key: str) -> bool:
 SCHEMA: dict[str, tuple[str, str]] = {
     "verify_enabled": ("bool", "Verification gate"),
     "verified_role_id": ("role", "Verified role"),
+    "verify_channel_id": ("channel", "Verification channel"),
     "log_channel_id": ("channel", "Log channel"),
     "welcome_channel_id": ("channel", "Welcome channel"),
     "goodbye_channel_id": ("channel", "Goodbye channel"),
@@ -59,7 +60,7 @@ SCHEMA: dict[str, tuple[str, str]] = {
 }
 
 SECTIONS = [
-    ("🛡️ Verification", ["verify_enabled", "verified_role_id"]),
+    ("🛡️ Verification", ["verify_enabled", "verified_role_id", "verify_channel_id"]),
     ("🎭 Reaction roles", []),
     ("🚨 Raid guard", ["join_threshold_count", "join_threshold_seconds", "raid_action",
                        "lockdown_duration_minutes", "new_account_age_days",
@@ -149,38 +150,136 @@ animation:fill 1s ease both}
 .heat i.l1{background:#2e1065}.heat i.l2{background:#5b21b6}.heat i.l3{background:#7c3aed}
 .heat i.l4{background:#a855f7}.heat i.l5{background:#c084fc}
 form{margin:0}.footer{text-align:center;color:#55556e;font-size:12px;padding:22px}
+/* ===== Wigglesworth control-center theme ===== */
+:root{--bg:#07070d;--bg2:#0b0b14;--card:#11111c;--line:#22222f;--line2:#2c2c44;
+--txt:#f2f2f8;--mut:#8b8b9e;--mut2:#55556e;--acc:#7c3aed;--accsoft:rgba(124,58,237,.14);
+--grn:#4ade80;--red:#f87171}
+body{background:var(--bg)}
+.app{display:flex;min-height:100vh}
+.sidebar{width:248px;flex:0 0 248px;position:sticky;top:0;height:100vh;overflow-y:auto;
+background:#0a0a12;border-right:1px solid var(--line);padding:20px 14px;display:flex;flex-direction:column;gap:4px}
+.sbrand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px}
+.sbrand .orb{width:32px;height:32px;border-radius:50%;flex:0 0 32px;
+background:conic-gradient(from 40deg,#a3e635,#7c3aed,#22d3ee,#a3e635)}
+.sbrand b{font-size:15px;display:block}.sbrand small{color:var(--mut);font-size:11px;display:block}
+.snavlabel{font-size:10px;letter-spacing:1.2px;color:var(--mut2);padding:12px 10px 4px;font-weight:800}
+.snav{display:flex;align-items:center;gap:10px;color:#b9b9cf;text-decoration:none;font-size:13.5px;
+padding:9px 12px;border-radius:10px;border:1px solid transparent}
+.snav .ic{width:20px;text-align:center}
+.snav:hover{background:#14141f;color:#fff}
+.snav.active{background:var(--accsoft);border-color:rgba(124,58,237,.35);color:#fff}
+.servers{margin-top:auto;border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:6px}
+.srv{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:10px;color:#cfcfe0;text-decoration:none;font-size:13px}
+.srv:hover{background:#14141f}
+.srv img,.srv .noav{width:28px;height:28px;border-radius:50%;flex:0 0 28px}
+.srv .noav{background:linear-gradient(135deg,#7c3aed,#22d3ee);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff}
+.main{flex:1;min-width:0;padding:0 28px 48px;max-width:1180px}
+.topbar2{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:14px 0;
+background:linear-gradient(var(--bg) 78%,transparent)}
+.topbar2 .crumb{font-size:12px;color:var(--mut2)}
+.topbar2 h1{font-size:19px;font-weight:800}
+.tspace{flex:1}
+.iconbtn{width:36px;height:36px;border-radius:10px;background:var(--card);border:1px solid var(--line);
+color:#cfcfe0;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.iconbtn:hover{border-color:var(--acc);color:#fff}
+.searchbox{background:var(--card);border:1px solid var(--line);border-radius:10px;color:#eee;
+padding:9px 12px;font-size:13px;width:210px}
+.searchbox:focus{outline:none;border-color:var(--acc)}
+.statusdot{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--mut);
+background:var(--card);border:1px solid var(--line);border-radius:20px;padding:7px 13px}
+.statusdot i{width:8px;height:8px;border-radius:50%;background:var(--grn);box-shadow:0 0 8px var(--grn)}
+.statusdot.down i{background:var(--red);box-shadow:0 0 8px var(--red)}
+.burger{display:none}
+.page{scroll-margin-top:76px}
+.pagehead{display:flex;align-items:baseline;gap:12px;margin:26px 2px 12px;flex-wrap:wrap}
+.pagehead h2{font-size:22px;font-weight:800}
+.pagehead p{color:var(--mut);font-size:13px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.gridstats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:0 0 14px;
+box-shadow:0 18px 50px rgba(0,0,0,.45)}
+.card h2{font-size:15px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center}
+.card .sub{color:var(--mut);font-size:12px;margin-bottom:10px}
+.card h3{margin:16px 0 6px;font-size:11px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.8px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.stat .lab{font-size:10.5px;letter-spacing:1px;color:var(--mut);font-weight:800;display:flex;gap:6px;align-items:center}
+.stat .num{font-size:30px;font-weight:800;letter-spacing:-.5px;margin:6px 0 2px}
+.stat .tr{font-size:12px;color:var(--mut)}
+.stat .tr.up{color:var(--grn)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid #1b1b27}
+.row:first-of-type{border-top:0}.row label{font-size:13.5px}.row small{display:block;color:var(--mut);font-size:12px;font-weight:400}
+.row form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+button,select{background:#fff;color:#111;border:0;border-radius:20px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px;transition:transform .15s,box-shadow .15s}
+button:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(124,58,237,.25)}
+button:disabled{opacity:.6;cursor:wait;transform:none}
+button.danger{background:rgba(244,63,94,.14);color:#fda4af;border:1px solid rgba(244,63,94,.4)}
+button.ok{background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.4)}
+button.dim{background:#1d1d2e;color:#cfcfe0}
+button.primary{background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff}
+select,input[type=text]{background:#0e0e17;color:#eee;border:1px solid var(--line2);border-radius:10px;padding:9px 11px;font-size:13px;max-width:100%}
+select:focus,input[type=text]:focus{outline:none;border-color:var(--acc)}
+button.sw{position:relative;width:46px;height:26px;border-radius:20px;padding:0;background:#2a2a3d;border:1px solid var(--line2)}
+button.sw .knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#8b8b9e;transition:left .18s,background .18s}
+button.sw.on{background:rgba(124,58,237,.5);border-color:var(--acc)}
+button.sw.on .knob{left:22px;background:#fff}
+.pill{display:inline-flex;align-items:center;gap:6px;background:#1d1d2e;border:1px solid var(--line);border-radius:12px;padding:4px 11px;margin:2px;font-size:12.5px}
+.pill input{accent-color:#7c3aed}
+.lockcard{border-color:rgba(244,63,94,.45)!important;background:linear-gradient(rgba(244,63,94,.06),transparent 60%),var(--card)}
+.av{width:30px;height:30px;border-radius:50%;flex:0 0 30px}
+.rank{width:24px;color:var(--mut);font-weight:800;font-size:13px;text-align:center}
+#toasts{position:fixed;right:18px;bottom:18px;z-index:99;display:flex;flex-direction:column;gap:8px}
+.toast{background:#171724;border:1px solid var(--line2);border-left:3px solid var(--acc);border-radius:12px;
+padding:11px 16px;font-size:13px;box-shadow:0 14px 40px rgba(0,0,0,.5);animation:tin .25s ease}
+.toast.ok{border-left-color:var(--grn)}.toast.err{border-left-color:var(--red)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media(max-width:1100px){.gridstats{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:900px){
+.grid2,.grid3{grid-template-columns:1fr}.gridstats{grid-template-columns:repeat(2,1fr)}
+.sidebar{position:fixed;left:0;z-index:50;transform:translateX(-105%);transition:transform .22s}
+.sidebar.open{transform:none;box-shadow:30px 0 80px rgba(0,0,0,.6)}
+.burger{display:flex}.searchbox{display:none}.main{padding:0 14px 40px}.row{flex-direction:column;align-items:stretch}
+.row form{justify-content:flex-start}}
 """
 
 BASE = ("<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<title>Wigglesworth Panel</title><style>" + CSS + "</style></head>"
-        "<body><div class=bg></div><div class=shell><div class=panel>"
-        "<div class=topbar><span class=brand><span class=orb></span>Wigglesworth</span>"
-        "<span class=pills><a href='#overview'>Overview</a>"
-        "<a href='#verify'>Verify</a>"
-        "<a href='#roles'>Roles</a><a href='#raid'>Raid</a><a href='#abuse'>Abuse</a>"
-        "<a href='#automod'>Automod</a>"
-        "<a href='#chat'>Chat</a><a href='#logs'>Logs</a></span></div>"
+        "<body><div class=app>%%SIDEBAR%%<div class=main>%%TOPBAR%%"
         "%%BODY%%"
-        "</div><div class=footer>Wigglesworth Bot · keep your ?key= secret</div></div></body></html>")
+        "<div class=footer>Wigglesworth Bot · keep your ?key= secret</div>"
+        "</div></div><div id=toasts></div></body></html>")
 
 
-def _page(body: str) -> str:
-    return BASE.replace("%%BODY%%", body).replace("</body>", JS + "</body>")
+def _page(body: str, sidebar: str = "", topbar: str = "") -> str:
+    html = BASE.replace("%%BODY%%", body).replace("%%SIDEBAR%%", sidebar)
+    html = html.replace("%%TOPBAR%%", topbar)
+    return html.replace("</body>", JS2 + "</body>")
 
 
-JS = '''
+
+
+JS2 = '''
 <script>
+function toast(msg, kind) {
+  var box = document.getElementById('toasts');
+  if (!box) return;
+  var t = document.createElement('div');
+  t.className = 'toast' + (kind ? ' ' + kind : '');
+  t.textContent = msg;
+  box.appendChild(t);
+  setTimeout(function() { t.remove(); }, 2600);
+}
 document.addEventListener('submit', function(e) {
   var f = e.target;
   if (!f || f.tagName !== 'FORM' || (f.method || '').toLowerCase() !== 'post') return;
   e.preventDefault();
-  var btn = f.querySelector('button');
-  var orig = btn ? btn.textContent : '';
-  var isToggle = orig === 'Turn on' || orig === 'Turn off';
-  if (btn) { btn.disabled = true; btn.textContent = '\\u23f3\\u2026'; }
+  var btn = f.querySelector('button[type=submit],button:not([type])');
+  if (!btn) btn = f.querySelector('button');
+  var isSwitch = btn && btn.classList.contains('sw');
+  var orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; }
   fetch(f.action, {method: 'POST', body: new FormData(f), credentials: 'same-origin'})
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r; })
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); })
     .then(function() {
       var path = '';
       try { path = new URL(f.action, location.origin).pathname; }
@@ -192,34 +291,148 @@ document.addEventListener('submit', function(e) {
         location.reload();
         return;
       }
-      if (isToggle) {
+      if (isSwitch) {
+        var on = btn.classList.contains('on');
+        btn.classList.toggle('on', !on);
         var val = f.querySelector('input[name=value][type=hidden]');
-        var row = f.parentElement;
-        var badge = row ? row.querySelector('.badge') : null;
-        if (val && badge) {
-          var nowOn = val.value === '0';
-          val.value = nowOn ? '1' : '0';
-          badge.textContent = nowOn ? 'OFF' : 'ON';
-          badge.className = 'badge ' + (nowOn ? 'off' : 'on');
+        if (val) val.value = on ? '0' : '1';
+        var badge = f.parentElement ? f.parentElement.querySelector('.badge') : null;
+        if (badge) {
+          badge.textContent = on ? 'OFF' : 'ON';
+          badge.className = 'badge ' + (on ? 'off' : 'on');
         }
-        if (btn) {
-          var flipped = orig === 'Turn on' ? 'Turn off' : 'Turn on';
-          btn.textContent = '\\u2713 ' + flipped;
-          setTimeout(function() { btn.textContent = flipped; btn.disabled = false; }, 1200);
-        }
+        btn.disabled = false;
+        toast(on ? 'Turned off' : 'Turned on', 'ok');
         return;
       }
+      toast('Saved', 'ok');
       if (btn) {
-        btn.textContent = '\\u2713 Saved';
-        setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 1200);
+        btn.textContent = 'Saved';
+        setTimeout(function() {
+          if (btn.classList.contains('sw')) return;
+          btn.innerHTML = orig; btn.disabled = false;
+        }, 1200);
       }
     })
     .catch(function() {
-      if (btn) { btn.textContent = '\\u274c Failed'; btn.disabled = false; }
+      toast('Save failed — is the bot online?', 'err');
+      if (btn) {
+        if (isSwitch) { btn.disabled = false; }
+        else { btn.textContent = 'Retry'; btn.disabled = false; }
+      }
     });
 });
+document.addEventListener('click', function(e) {
+  var b = e.target.closest && e.target.closest('.burger');
+  if (b) {
+    var sb = document.querySelector('.sidebar');
+    if (sb) sb.classList.toggle('open');
+  }
+  var nb = e.target.closest && e.target.closest('.snav');
+  if (nb) {
+    var sb2 = document.querySelector('.sidebar');
+    if (sb2 && window.innerWidth <= 900) sb2.classList.remove('open');
+  }
+  var eb = e.target.closest && e.target.closest('.menu-edit');
+  if (eb) {
+    var card = eb.closest('.card');
+    var form = card ? card.querySelector('form.rolemenu-form') : null;
+    if (!form) return;
+    var act = form.querySelector('input[name=action]');
+    var idx = form.querySelector('input[name=idx]');
+    if (act) act.value = 'edit';
+    if (idx) idx.value = eb.getAttribute('data-idx') || '';
+    var want = (eb.getAttribute('data-roles') || '').split(',').filter(Boolean);
+    form.querySelectorAll('input[name=roles]').forEach(function(cb) {
+      cb.checked = want.indexOf(cb.value) !== -1;
+    });
+    var ch = form.querySelector('select[name=channel]');
+    if (ch) ch.value = eb.getAttribute('data-channel') || ch.value;
+    var sub = form.querySelector('button[type=submit],button:not([type])') || form.querySelector('button');
+    if (sub) sub.textContent = 'Save edits';
+    form.scrollIntoView({behavior: 'smooth', block: 'center'});
+    toast('Editing menu — tweak roles, then Save edits');
+  }
+});
+(function() {
+  var links = Array.prototype.slice.call(document.querySelectorAll('.snav[data-spy]'));
+  if (!links.length || !('IntersectionObserver' in window)) return;
+  var map = {};
+  links.forEach(function(a) { map[a.getAttribute('href').slice(1)] = a; });
+  var obs = new IntersectionObserver(function(es) {
+    es.forEach(function(en) {
+      if (en.isIntersecting && map[en.target.id]) {
+        links.forEach(function(a) { a.classList.remove('active'); });
+        map[en.target.id].classList.add('active');
+      }
+    });
+  }, {rootMargin: '-30% 0px -60% 0px'});
+  Object.keys(map).forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) obs.observe(el);
+  });
+})();
+(function() {
+  var box = document.getElementById('dashsearch');
+  if (!box) return;
+  box.addEventListener('input', function() {
+    var q = box.value.trim().toLowerCase();
+    document.querySelectorAll('.card[data-search]').forEach(function(card) {
+      if (!q) { card.style.display = ''; return; }
+      var hit = (card.getAttribute('data-search') || '').toLowerCase().indexOf(q) !== -1;
+      card.style.display = hit ? '' : 'none';
+    });
+  });
+  box.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      var first = null;
+      document.querySelectorAll('.card[data-search]').forEach(function(card) {
+        if (!first && card.style.display !== 'none') first = card;
+      });
+      if (first) first.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+  });
+})();
 </script>
 '''
+
+
+NAV = [
+    ("OVERVIEW", [("🏠", "Overview", "overview")]),
+    ("SERVER", [("🛡️", "Verify", "verify"), ("🎭", "Roles", "roles"),
+               ("🚨", "Raid", "raid"), ("🚩", "Abuse", "abuse"),
+               ("🤖", "Automod", "automod"), ("💬", "Chat", "chat"),
+               ("📝", "Logs", "logs")]),
+]
+
+
+def _sidebar(g0, guilds):
+    links = []
+    for label, items in NAV:
+        links.append(f"<div class=snavlabel>{label}</div>")
+        for ic, name, anchor in items:
+            href = f"#s{g0.id}-{anchor}" if g0 else f"#{anchor}"
+            links.append(f"<a class=snav data-spy href='{href}'><span class=ic>{ic}</span>{name}</a>")
+    srvs = []
+    for g in guilds:
+        icon = f"<img src='{g.icon.url}'>" if getattr(g, "icon", None) else \
+            f"<span class=noav>{_esc((g.name or '?')[:1])}</span>"
+        srvs.append(f"<a class=srv href='#srv-{g.id}'>{icon}<span>{_esc(g.name)}</span></a>")
+    return ("<aside class=sidebar><div class=sbrand><span class=orb></span>"
+            "<span><b>Wigglesworth</b><small>Discord Bot</small></span></div>"
+            + "".join(links) +
+            "<div class=servers><div class=snavlabel>Servers</div>" + "".join(srvs) + "</div></aside>")
+
+
+def _topbar(connected, n_guilds):
+    dot = "" if connected else " down"
+    txt = f"Connected · {n_guilds} server{'s' if n_guilds != 1 else ''}" if connected else "Bot offline"
+    return ("<div class=topbar2><button class='iconbtn burger' aria-label=menu>☰</button>"
+            "<div><div class=crumb>Wigglesworth / Panel</div><h1>Dashboard</h1></div>"
+            "<div class=tspace></div>"
+            "<input id=dashsearch class=searchbox placeholder='Search settings…'>"
+            f"<span class='statusdot{dot}'><i></i>{txt}</span></div>")
 
 
 def _role_opts(guild, current):
@@ -255,7 +468,7 @@ def _field(key, kind, label, guild, cfg, urlkey):
                 f"<input type=hidden name=guild value={guild.id}>"
                 f"<input type=hidden name=key value={key}>"
                 f"<input type=hidden name=value value={'0' if state else '1'}>"
-                f"<button>{'Turn off' if state else 'Turn on'}</button></form></div>")
+                f"<button class='sw {('on' if state else '')}' aria-label='toggle {label}' title='toggle {label}'><span class=knob></span></button></form></div>")
     if kind == "int":
         return (f"<div class=row><label>{label}</label>"
                 f"<form method=post action='/api/config?key={urlkey}'>"
@@ -337,24 +550,70 @@ def _section(title, anchor, inner):
     return (f"<div class=card id='{anchor}'><h2>{title}</h2>{inner}</div>" if inner else "")
 
 
+def _card(title, sub, inner, card_id="", extra_cls=""):
+    import re as _re
+    plain = _re.sub(r"<[^>]+>", " ", inner)
+    search = _esc((title + " " + sub + " " + plain)[:900])
+    return (f"<div class='card {extra_cls}' id='{card_id}' data-search='{search}'>"
+            f"<h2>{title}</h2>" + (f"<div class=sub>{sub}</div>" if sub else "") + inner + "</div>")
+
+
+def _page_sec(gid, anchor, title, sub, cards_html):
+    return (f"<section class=page id='s{gid}-{anchor}'><div class=pagehead><h2>{title}</h2>"
+            f"<p>{sub}</p></div>{cards_html}</section>")
+
+
+def _automod_groups(guild, cfg, urlkey):
+    def F(keys):
+        return "".join(_field(k, SCHEMA[k][0], SCHEMA[k][1], guild, cfg, urlkey) for k in keys)
+    return ("<h3>Invite protection</h3>" + F(["automod_invites"])
+            + "<h3>Link protection</h3>" + F(["automod_links", "link_allowed_channels"])
+            + "<h3>Spam protection</h3>" + F(["automod_spam", "automod_max_mentions",
+                                              "automod_emoji", "automod_max_emoji"])
+            + "<h3>Content filter</h3>" + F(["automod_caps", "automod_words"]))
+
+
 def _guild_block(guild, cfg, urlkey):
-    parts = [f"<h2 class=sechead style='font-size:22px;margin-top:20px'>{_esc(guild.name)}</h2>"]
-    for title, keys in SECTIONS:
-        anchor = SECTION_IDS.get(title, "")
-        inner = "".join(_field(k, SCHEMA[k][0], SCHEMA[k][1], guild, cfg, urlkey)
-                        for k in keys)
-        if title == "🎭 Reaction roles":
-            inner += _rolemenu_block(guild, urlkey)
-        if title == "🎧 Voice presence":
-            inner += _voice_block(guild, cfg, urlkey)
-        elif title == "🔐 Lockdown":
-            inner += _lockdown_block(guild, urlkey)
-        elif title == "📋 Whitelist":
-            inner += _whitelist_block(guild, cfg, urlkey)
-        elif title == "🧹 Mod actions":
-            inner += _mod_block(guild, urlkey)
-        parts.append(f"<div class=card id='{anchor}'><h2>{title}</h2>{inner}</div>" if anchor
-                     else f"<div class=card><h2>{title}</h2>{inner}</div>")
+    gid = guild.id
+
+    def F(keys):
+        return "".join(_field(k, SCHEMA[k][0], SCHEMA[k][1], guild, cfg, urlkey) for k in keys)
+
+    parts = [f"<section class=page id='srv-{gid}'><div class=pagehead><h2>{_esc(guild.name)}</h2>"
+             f"<p>{len(guild.members)} members · {len(guild.text_channels)} text channels</p></div></section>"]
+    parts.append(_page_sec(gid, "verify", "Verify", "Gate new members and hand out the verified role.",
+        _card("Verification gate", "Who gets in and what they receive.",
+              F(["verify_enabled", "verified_role_id", "verify_channel_id"]), f"c-{gid}-verify")))
+    parts.append(_page_sec(gid, "roles", "Roles", "Self-serve role menus members opt into.",
+        _card("Reaction roles", "Menus post as embeds with toggle buttons.",
+              _rolemenu_block(guild, urlkey), f"c-{gid}-roles")))
+    parts.append(_page_sec(gid, "raid", "Raid", "Join-spike detection and automatic response.",
+        _card("Raid guard", "Thresholds and what the bot does when they trip.",
+              F(["join_threshold_count", "join_threshold_seconds", "raid_action",
+                 "lockdown_duration_minutes", "new_account_age_days",
+                 "timeout_duration_minutes"]), f"c-{gid}-raid")))
+    parts.append(_page_sec(gid, "abuse", "Abuse", "Pings, lockdowns and manual moderation.",
+        _card("Abuse ping", "Where .abuse alerts go and who they notify.",
+              F(["abuse_role_id", "abuse_channel_id"]), f"c-{gid}-abuse")
+        + _card("Lockdown", "Freeze every text channel instantly. Big red button energy.",
+                _lockdown_block(guild, urlkey), f"c-{gid}-lockdown", "lockcard")
+        + _card("Whitelist", "These users bypass raid actions.",
+                _whitelist_block(guild, cfg, urlkey), f"c-{gid}-whitelist")
+        + _card("Mod actions", "Bulk delete, slowmode and voice control.",
+                _mod_block(guild, urlkey), f"c-{gid}-mod")))
+    parts.append(_page_sec(gid, "automod", "Automod", "Automatic message filtering.",
+        _card("Automod", "Tuned per category. Switches save instantly.",
+              _automod_groups(guild, cfg, urlkey), f"c-{gid}-automod")))
+    parts.append(_page_sec(gid, "chat", "Chat", "Talkative features and voice.",
+        _card("Chatbot", "Replies, mood and reactions.",
+              F(["chat_enabled", "chat_channel_id", "bot_mood", "autoreact"]), f"c-{gid}-chat")
+        + _card("Daily question", "One prompt a day to spark chat.",
+                F(["qotd_channel_id"]), f"c-{gid}-qotd")
+        + _card("Voice", "Join-to-create lobbies and where the bot sits.",
+                F(["lobby_channel_id"]) + _voice_block(guild, cfg, urlkey), f"c-{gid}-voice")))
+    parts.append(_page_sec(gid, "logs", "Logs", "Where the bot reports what it does.",
+        _card("Logging", "Raid hits, mod actions and joins land here.",
+              F(["log_channel_id"]), f"c-{gid}-logs")))
     return "".join(parts)
 
 
@@ -432,6 +691,7 @@ def _rolemenu_block(guild, urlkey):
     rows = []
     for i, m in enumerate(menus):
         ch = guild.get_channel(m.get("channel") or 0)
+        rids = ",".join(str(r) for r in m.get("roles", []))
         rows.append(
             f"<div class=row><label>#{ch.name if ch else m.get('channel')} "
             f"<small>{len(m.get('roles', []))} roles</small></label>"
@@ -439,6 +699,8 @@ def _rolemenu_block(guild, urlkey):
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='delete'>"
             f"<input type=hidden name=idx value={i}>"
+            f"<button type=button class='dim menu-edit' data-idx={i} "
+            f"data-channel={m.get('channel')} data-roles='{rids}'>Edit</button>"
             f"<button class=danger>Delete</button></form></div>")
     boxes = []
     for r in sorted(guild.roles, key=lambda r: r.position, reverse=True):
@@ -455,9 +717,10 @@ def _rolemenu_block(guild, urlkey):
     roles = "".join(boxes)
     chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
     return (("".join(rows) or "<p><small>No menus yet.</small></p>")
-            + f"<form method=post action='/api/rolemenu?key={urlkey}'>"
+            + f"<form class=rolemenu-form method=post action='/api/rolemenu?key={urlkey}'>"
             f"<input type=hidden name=guild value={guild.id}>"
             f"<input type=hidden name=action value='add'>"
+            f"<input type=hidden name=idx value='-1'>"
             f"<select name=channel>{chans}</select><br>"
             f"<div style='max-height:220px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;"
             f"padding:6px 0'>{roles}</div>"
@@ -465,20 +728,52 @@ def _rolemenu_block(guild, urlkey):
             f"<button>➕ New menu</button></form>")
 
 
-def _hero(b, guilds):
-    members = sum(len([m for m in g.members if not getattr(m, "bot", False)]) for g in guilds)
-    xp_all = getattr(b, "xp_data", {})
-    total_xp = sum(int(v.get("xp", 0)) for gd in xp_all.values() for v in gd.values()
-                   if isinstance(v, dict))
-    earners = sum(1 for gd in xp_all.values() for v in gd.values()
-                  if isinstance(v, dict) and int(v.get("xp", 0)) > 0)
-    return (f"<div class=hero id=overview><div><h1>Welcome back, <span>boss</span></h1>"
-            f"<p>{len(guilds)} server(s) · all systems nominal.</p></div></div>"
-            f"<div class=bignum>Total XP floating around<b><br>${total_xp:,}</b> "
-            f"<small>+live</small></div>"
-            f"<div class=avail>Members watched: <b>{members}</b> · XP earners: <b>{earners}</b></div>"
-            f"<div class=btnrow><span class=pill>🛡️ Guard on</span>"
-            f"<span class=pill>💬 Chat on</span></div>")
+def _stat(ic, label, num, sub):
+    return (f"<div class=stat><div class=lab><span>{ic}</span>{label}</div>"
+            f"<div class=num>{num}</div><div class=tr>{sub}</div></div>")
+
+
+def _overview(b, guilds, g0, cfg):
+    members = [m for m in g0.members if not getattr(m, "bot", False)]
+    xp = getattr(b, "xp_data", {}).get(str(g0.id), {})
+    total_xp = sum(int(v.get("xp", 0)) for v in xp.values() if isinstance(v, dict))
+    earners = sum(1 for v in xp.values() if isinstance(v, dict) and int(v.get("xp", 0)) > 0)
+    flags = [bool(cfg.get("verify_enabled")), bool(cfg.get("automod_invites")),
+             bool(cfg.get("automod_links")), bool(cfg.get("automod_spam")),
+             bool(cfg.get("automod_caps")), bool(cfg.get("automod_emoji")),
+             bool(cfg.get("chat_enabled", True)), bool(cfg.get("autoreact", True)),
+             cfg.get("raid_action", "ban") != "none", bool(cfg.get("qotd_channel_id"))]
+    on = sum(1 for f in flags if f)
+    health_items = [("Verification", bool(cfg.get("verify_enabled"))),
+                    ("Invite filter", bool(cfg.get("automod_invites"))),
+                    ("Chatbot", bool(cfg.get("chat_enabled", True))),
+                    ("Automod", any(cfg.get(k) for k in ("automod_links", "automod_spam",
+                                                         "automod_caps", "automod_emoji"))),
+                    ("Raid protection", cfg.get("raid_action", "ban") != "none")]
+    hon = sum(1 for _, s in health_items if s)
+    top = sorted(((int(v.get("xp", 0)), uid) for uid, v in xp.items()
+                  if isinstance(v, dict)), reverse=True)[:1]
+    topname = ""
+    if top:
+        m = g0.get_member(int(top[0][1]))
+        topname = f" · top: {(m.display_name if m else '—')}"
+    stats = "".join([
+        _stat("👥", "SERVER MEMBERS", f"{len(members)}", f"{len(g0.members) - len(members)} bots"),
+        _stat("✨", "TOTAL XP", f"{total_xp:,}", f"across {earners} earners{topname}"),
+        _stat("🏆", "XP EARNERS", f"{earners}", f"of {len(members)} members"),
+        _stat("🧩", "ACTIVE FEATURES", f"{on}/10", "tracked systems on"),
+        _stat("💚", "SERVER HEALTH", f"{hon * 20}%", f"{hon}/5 systems on"),
+    ])
+    return (f"<section class=page id='s{g0.id}-overview'><div class=pagehead>"
+            f"<h2>Welcome back, boss</h2><p>Here's what's happening across your server.</p>"
+            f"<span class=pill>🛡️ All systems nominal</span></div>"
+            f"<div class=gridstats>{stats}</div>"
+            f"<div class=grid3>{_health(health_items)}{_leaders(b, g0)}{_weekheat(b, guilds)}</div>"
+            f"</section>")
+
+
+def _hero_unused(b, guilds):
+    return ""
 
 
 def _leaders(b, guild):
@@ -486,33 +781,37 @@ def _leaders(b, guild):
     board = sorted(((int(v.get("xp", 0)), uid) for uid, v in xp.items()
                     if isinstance(v, dict)), reverse=True)[:5]
     if not board:
-        return ""
+        return ("<div class=card><h2>🏆 XP Leaders</h2>"
+                "<div class=sub>No XP yet — chat to light it up.</div></div>")
     top = max(board[0][0], 1)
-    rows = "".join(
-        f"<div class=lb><span class=who>{_esc(guild.get_member(int(uid)).display_name if guild.get_member(int(uid)) else '—')}</span>"
-        f"<span class=track><span class=fill style='width:{int(x * 100 / top)}%'></span></span>"
-        f"<span class=xp>{x:,} XP</span></div>" for x, uid in board)
-    return (f"<div class=card><h2>🏆 XP Leaders <span class=x>···</span></h2>"
-            f"<div class=legend><span><i class='dot g'></i>Top 5</span></div>{rows}</div>")
+    rows = ""
+    for i, (x, uid) in enumerate(board, 1):
+        m = guild.get_member(int(uid))
+        name = _esc(m.display_name) if m else "—"
+        av = (m.display_avatar.url if m and getattr(m, "display_avatar", None)
+              else "https://cdn.discordapp.com/embed/avatars/0.png")
+        rows += (f"<div class=lb><span class=rank>#{i}</span>"
+                 f"<img class=av src='{av}' loading=lazy>"
+                 f"<span class=who>{name}</span>"
+                 f"<span class=track><span class=fill style='width:{int(x * 100 / top)}%'></span></span>"
+                 f"<span class=xp>{x:,} XP</span></div>")
+    return ("<div class=card><h2>🏆 XP Leaders</h2>"
+            "<div class=sub>Top 5 by XP</div>" + rows + "</div>")
 
 
-def _health(b, guild, cfg):
-    v = bool(cfg.get("verify_enabled"))
-    am = bool(cfg.get("automod_invites"))
-    ch = bool(cfg.get("chat_enabled", True))
-    rows = [
-        ("Verification gate", "ON" if v else "OFF", v),
-        ("Invite filter", "ON" if am else "OFF", am),
-        ("Chatbot", "ON" if ch else "OFF", ch),
-    ]
+def _health(items):
     body = "".join(
         f"<div class=txn><span class=t>{label}</span>"
-        f"<span class='tag'>{state}</span>"
-        f"<span class='amt {'pos' if good else 'neg'}'>●</span></div>"
-        for label, state, good in rows)
-    return (f"<div class=card><h2>📊 Server health <span class=x>···</span></h2>"
-            f"<div class=legend><span><i class='dot g'></i>Live</span>"
-            f"<span><i class='dot gr'></i>Off</span></div>{body}</div>")
+        f"<span class='badge {'on' if good else 'off'}'>{'ON' if good else 'OFF'}</span></div>"
+        for label, good in items)
+    return ("<div class=card><h2>💚 Server health</h2>"
+            "<div class=sub>Live feature states</div>" + body + "</div>")
+
+
+def _health_legacy(b, guild, cfg):
+    return _health([("Verification gate", bool(cfg.get("verify_enabled"))),
+                    ("Invite filter", bool(cfg.get("automod_invites"))),
+                    ("Chatbot", bool(cfg.get("chat_enabled", True)))])
 
 
 def _weekheat(b, guilds):
@@ -584,16 +883,12 @@ def create_app():
         glist = guilds()
         if not glist:
             return _page("No servers yet.")
-        body = _hero(b, glist)
-        body += "<div class=grid3>"
         g0 = glist[0]
-        body += _health(b, g0, b.get_config(g0.id))
-        body += _leaders(b, g0)
-        body += _weekheat(b, glist)
-        body += "</div>"
+        body = _overview(b, glist, g0, b.get_config(g0.id))
         for g in glist:
             body += _guild_block(g, b.get_config(g.id), key)
-        return _page(body)
+        disc = _disc()
+        return _page(body, _sidebar(g0, glist), _topbar(bool(disc), len(glist)))
 
     @app.post("/api/config")
     def api_config():
@@ -661,6 +956,43 @@ def create_app():
                     fut.result(timeout=20)
                 except Exception as e:
                     print("[dash] menu create failed:", e)
+        elif action == "edit":
+            try:
+                idx = int(request.form.get("idx", -1))
+            except (ValueError, TypeError):
+                idx = -1
+            menus = b.rr_data.get(str(gid), [])
+            if 0 <= idx < len(menus):
+                old = menus[idx]
+                disc = _disc()
+                g = disc.get_guild(gid) if disc else None
+                ch = g.get_channel(old["channel"]) if g else None
+                if ch and disc:
+                    fut = _aio.run_coroutine_threadsafe(ch.fetch_message(old["message"]), disc.loop)
+                    try:
+                        msg = fut.result(timeout=10)
+                        fut2 = _aio.run_coroutine_threadsafe(msg.delete(), disc.loop)
+                        fut2.result(timeout=10)
+                    except Exception:
+                        pass
+                    menus.pop(idx)
+                    b._save_rr(b.rr_data)
+                rids = [int(r) for r in request.form.getlist("roles")][:25]
+                try:
+                    ch_id = int(request.form.get("channel", 0) or 0)
+                except (ValueError, TypeError):
+                    ch_id = 0
+                if rids and ch_id and disc and g:
+                    before = len(b.rr_data.get(str(gid), []))
+                    fut = _aio.run_coroutine_threadsafe(_make_menu(b, gid, ch_id, rids), disc.loop)
+                    try:
+                        fut.result(timeout=20)
+                        menus = b.rr_data.get(str(gid), [])
+                        if len(menus) > before:
+                            menus.insert(min(idx, len(menus)), menus.pop())
+                            b._save_rr(b.rr_data)
+                    except Exception as e:
+                        print("[dash] menu edit failed:", e)
         return redirect(f"/?key={request.args.get('key', '')}")
 
     @app.post("/api/whitelist")
