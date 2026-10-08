@@ -6,6 +6,7 @@ import json
 import os
 import random
 import time
+import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -106,6 +107,33 @@ def _save_xp(data: dict) -> None:
     XP_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+EVENTS_FILE = DATA_DIR / "events.json"
+EVENTS_CAP = 20000
+try:
+    _ev = json.loads(EVENTS_FILE.read_text(encoding="utf-8")) if EVENTS_FILE.exists() else []
+    events_data: list = _ev if isinstance(_ev, list) else []
+except (json.JSONDecodeError, OSError):
+    events_data = []
+
+
+def track(guild_id, kind: str, **kw) -> None:
+    """Append one analytics event (in-memory; flushed every 60s)."""
+    try:
+        events_data.append({"t": time.time(), "g": str(guild_id), "k": kind, **kw})
+        if len(events_data) > EVENTS_CAP:
+            del events_data[:-EVENTS_CAP]
+    except Exception:
+        pass
+
+
+@tasks.loop(seconds=60)
+async def events_flush_loop() -> None:
+    try:
+        EVENTS_FILE.write_text(json.dumps(events_data), encoding="utf-8")
+    except OSError:
+        pass
+
+
 xp_data: dict[str, dict[str, dict]] = _load_xp()  # guild_id -> user_id -> {xp, last}
 
 
@@ -125,9 +153,11 @@ def award_xp(guild_id: int, user_id: int) -> tuple[int, int, bool]:
     if now - float(entry.get("last", 0)) < XP_COOLDOWN_S:
         return int(entry["xp"]), xp_level(int(entry["xp"])), False
     old_level = xp_level(int(entry["xp"]))
-    entry["xp"] = int(entry["xp"]) + random.randint(XP_MIN, XP_MAX)
+    gained = random.randint(XP_MIN, XP_MAX)
+    entry["xp"] = int(entry["xp"]) + gained
     entry["last"] = now
     _save_xp(xp_data)
+    track(guild_id, "xp", u=str(user_id), amt=gained)
     new_level = xp_level(int(entry["xp"]))
     return int(entry["xp"]), new_level, new_level > old_level
 
@@ -262,8 +292,11 @@ def account_age_days(member: discord.Member) -> float:
     return (datetime.now(timezone.utc) - created).total_seconds() / 86400
 
 
-async def send_log(guild: discord.Guild, message: str, embed: discord.Embed | None = None) -> None:
+async def send_log(guild: discord.Guild, message: str, embed: discord.Embed | None = None,
+                   event: str | None = None) -> None:
     cfg = get_config(guild.id)
+    if event:
+        track(guild.id, "mod", action=event)
     channel = None
     if cfg.get("log_channel_id"):
         channel = guild.get_channel(cfg["log_channel_id"])
@@ -458,7 +491,7 @@ async def schedule_auto_unlock(guild: discord.Guild, cfg: dict) -> None:
         if raid_active.get(guild.id):
             raid_active[guild.id] = False
             n = await unlock_guild(guild, reason="auto-unlock (timer expired)")
-            await send_log(guild, f"🔓 Auto-unlock: restored {n} channel(s). Raid mode OFF.")
+            await send_log(guild, f"🔓 Auto-unlock: restored {n} channel(s). Raid mode OFF.", event="unlock")
 
     raid_lock_task[guild.id] = asyncio.create_task(_unlock_later())
 
@@ -538,6 +571,8 @@ async def trigger_raid(guild: discord.Guild, cfg: dict, recent_members: list[dis
         inline=False,
     )
     await send_log(guild, "⚠️ Suspected raid — lockdown active.", embed=embed)
+    track(guild.id, "mod", action="raid")
+    await schedule_auto_unlock(guild, cfg)
     await schedule_auto_unlock(guild, cfg)
 
 
@@ -550,6 +585,11 @@ async def on_ready() -> None:
     rr_register_saved()  # re-arm role menus (defined below, resolved at runtime)
     if not qotd_loop.is_running():
         qotd_loop.start()
+    if not events_flush_loop.is_running():
+        events_flush_loop.start()
+    if not gw_loop.is_running():
+        gw_loop.start()
+    bot.add_view(GiveawayView())  # keep 🎉 buttons alive across restarts
     for guild in bot.guilds:
         await cache_guild_invites(guild)
         vcid = get_config(guild.id).get("mod_vc_channel_id")
@@ -588,9 +628,16 @@ async def on_invite_delete(invite: discord.Invite) -> None:
 
 
 @bot.event
+async def on_command_completion(ctx: commands.Context) -> None:
+    if ctx.guild and ctx.command:
+        track(ctx.guild.id, "cmd", name=ctx.command.qualified_name)
+
+
+@bot.event
 async def on_member_join(member: discord.Member) -> None:
     if not bot_enabled:
         return
+    track(member.guild.id, "join")
     guild = member.guild
     cfg = get_config(guild.id)
     now = datetime.now(timezone.utc)
@@ -637,6 +684,8 @@ async def on_member_join(member: discord.Member) -> None:
                 member, cfg["raid_action"], "Anti-raid: joined during active raid", cfg
             )
             await send_log(guild, f"🔨 {member} (`{member.id}`) joined during raid → {outcome}.")
+            _kind = "timeout" if outcome.startswith("timed") else outcome if outcome in ("banned", "kicked") else "ban"
+            track(guild.id, "mod", action=_kind)
             return
 
     # burst → raid
@@ -696,6 +745,7 @@ async def on_message(message: discord.Message) -> None:
     if message.author.bot or not message.guild:
         await bot.process_commands(message)
         return
+    track(message.guild.id, "msg")
     if not bot_enabled:
         await bot.process_commands(message)  # only .enable gets through (global check)
         return
@@ -853,7 +903,7 @@ SAVAGE_COMEBACKS = (
     "shut up? {n}, you couldn't even mute yourself 💀",
     "{n} talking crazy. somebody clip this L 😎",
     "damn {n}, all bark and zero bite. sit the fuck down 💀",
-    "imagine getting cooked after saying 'shut up'. embarrassing 😭",
+    "imagine getting cooked after saying 'shut up', {n}. embarrassing 😭",
 )
 
 RAP_PHRASES = ("rap then", "drop a rap", "spit a rap", "rap battle", "spit bars",
@@ -1710,7 +1760,8 @@ async def automod_check(message: discord.Message) -> bool:
             await message.author.timeout(timedelta(minutes=int(cfg.get("timeout_duration_minutes", 10))),
                                          reason="Automod: 3 strikes")
             await send_log(message.guild,
-                           f"🔇 {message.author} (`{message.author.id}`) auto-muted: 3 automod strikes.")
+                           f"🔇 {message.author} (`{message.author.id}`) auto-muted: 3 automod strikes.",
+                           event="mute")
         except (discord.Forbidden, discord.HTTPException):
             pass
     return True
@@ -1725,7 +1776,7 @@ async def cmd_lockdown(ctx: commands.Context, *, reason: str = "manual lockdown"
     raid_active[ctx.guild.id] = True
     n = await lockdown_guild(ctx.guild, reason=f"manual by {ctx.author}: {reason}")
     await ctx.send(f"🔒 Locked **{n}** channel(s). Reason: {reason}")
-    await send_log(ctx.guild, f"🔒 Manual lockdown by {ctx.author.mention}: {reason}")
+    await send_log(ctx.guild, f"🔒 Manual lockdown by {ctx.author.mention}: {reason}", event="lockdown")
 
 
 @bot.command(name="unlock")
@@ -1737,7 +1788,7 @@ async def cmd_unlock(ctx: commands.Context) -> None:
         task.cancel()
     n = await unlock_guild(ctx.guild, reason=f"manual by {ctx.author}")
     await ctx.send(f"🔓 Unlocked **{n}** channel(s). Raid mode OFF.")
-    await send_log(ctx.guild, f"🔓 Manual unlock by {ctx.author.mention}.")
+    await send_log(ctx.guild, f"🔓 Manual unlock by {ctx.author.mention}.", event="unlock")
 
 
 @bot.command(name="raidmode")
@@ -2110,6 +2161,203 @@ def rr_register_saved() -> None:
                 bot.add_view(view)
             except Exception:
                 pass
+
+
+# ---------- giveaways ----------
+GIVEAWAY_FILE = DATA_DIR / "giveaways.json"
+
+
+def _load_gw() -> dict:
+    try:
+        d = json.loads(GIVEAWAY_FILE.read_text(encoding="utf-8")) if GIVEAWAY_FILE.exists() else {}
+        return d if isinstance(d, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_gw(data: dict) -> None:
+    try:
+        GIVEAWAY_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+giveaway_data: dict = _load_gw()  # id -> {guild,channel,message,prize,ends_at,winners_n,host,entrants,status,...}
+
+
+def parse_duration(s: str) -> int | None:
+    """'10m','2h','7d','60s' -> seconds (60s..30d). None if invalid."""
+    import re as _re
+    m = _re.match(r"^\s*(\d+)\s*([smhd])\s*$", (s or "").lower())
+    if not m:
+        return None
+    secs = int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    return secs if 60 <= secs <= 30 * 86400 else None
+
+
+def gw_embed(g: dict, ended: bool = False) -> discord.Embed:
+    prize, n, ends = g["prize"], int(g["winners_n"]), int(g["ends_at"])
+    entries = len(g.get("entrants", []))
+    if ended:
+        winners = g.get("winners", [])
+        if winners:
+            wline = ", ".join(f"<@{w}>" for w in winners)
+            desc = f"## {prize}\n\n🏆 Winner(s): {wline}"
+        else:
+            desc = f"## {prize}\n\n😢 No entries — nobody wins this time."
+        em = E("✅ GIVEAWAY ENDED", desc, kind="info")
+    else:
+        host = f"<@{g['host']}>" if str(g.get("host", "")).isdigit() and int(g["host"]) else "the dashboard"
+        desc = (f"## {prize}\n\n🏆 Winners: **{n}**\n👥 Entries: **{entries}**\n"
+                f"⏰ Ends: <t:{ends}:R> (<t:{ends}:F>)\n👤 Hosted by: {host}")
+        em = E("🎁 GIVEAWAY", desc, kind="win")
+    em.set_footer(text="Wigglesworth · click 🎉 to enter" if not ended else "Wigglesworth · ended")
+    return em
+
+
+class GiveawayView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Enter Giveaway", emoji="🎉",
+                       style=discord.ButtonStyle.success, custom_id="gw_enter")
+    async def enter(self, interaction: discord.Interaction,
+                    button: discord.ui.Button) -> None:
+        guild = interaction.guild
+        if guild is None:
+            return
+        g = next((x for x in giveaway_data.values()
+                  if x.get("guild") == str(guild.id)
+                  and x.get("message") == interaction.message.id
+                  and x.get("status") == "active"), None)
+        if g is None:
+            try:
+                await interaction.response.send_message("This giveaway already ended.", ephemeral=True)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            return
+        uid = str(interaction.user.id)
+        entrants = g.setdefault("entrants", [])
+        if uid in entrants:
+            entrants.remove(uid)
+            msg = "You left the giveaway."
+        else:
+            entrants.append(uid)
+            msg = f"You're in! Good luck 🎉 ({len(entrants)} entries)"
+        _save_gw(giveaway_data)
+        try:
+            await interaction.message.edit(embed=gw_embed(g))
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+            pass
+        try:
+            await interaction.response.send_message(msg, ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+
+def _gw_find(guild_id: int, gid: str | None = None, active_only: bool = False) -> dict | None:
+    items = [g for g in giveaway_data.values() if g.get("guild") == str(guild_id)]
+    if gid:
+        gid = gid.strip().lower()
+        items = [g for g in items if g["id"].lower().startswith(gid)]
+    if active_only:
+        items = [g for g in items if g.get("status") == "active"]
+    items.sort(key=lambda g: g.get("created", 0), reverse=True)
+    return items[0] if items else None
+
+
+async def create_giveaway(guild: discord.Guild, channel, prize: str,
+                          dur_s: int, winners_n: int, host_id: int) -> str:
+    gid = uuid.uuid4().hex[:8]
+    now = time.time()
+    g = {"id": gid, "guild": str(guild.id), "channel": channel.id, "message": 0,
+         "prize": prize[:200], "duration_s": dur_s, "ends_at": now + dur_s,
+         "winners_n": max(1, min(10, winners_n)), "host": str(host_id),
+         "entrants": [], "status": "active", "winners": [], "created": now, "rerolls": 0}
+    msg = await channel.send(embed=gw_embed(g), view=GiveawayView())
+    g["message"] = msg.id
+    giveaway_data[gid] = g
+    _save_gw(giveaway_data)
+    return gid
+
+
+async def end_giveaway(gid: str, by: str = "auto") -> str:
+    g = giveaway_data.get(gid)
+    if g is None:
+        return "❌ Giveaway not found."
+    if g.get("status") != "active":
+        return "⚠️ That giveaway already ended."
+    g["status"] = "ended"
+    g["ended_at"] = time.time()
+    g["ended_by"] = str(by)
+    entrants = list(g.get("entrants", []))
+    n = min(int(g["winners_n"]), len(entrants))
+    g["winners"] = random.sample(entrants, n) if n else []
+    _save_gw(giveaway_data)
+    guild = bot.get_guild(int(g["guild"]))
+    if guild is None:
+        return "✅ Ended (server gone)."
+    channel = guild.get_channel(g["channel"])
+    mention = ", ".join(f"<@{w}>" for w in g["winners"]) if g["winners"] else "nobody"
+    try:
+        if channel:
+            try:
+                msg = await channel.fetch_message(g["message"])
+                await msg.edit(embed=gw_embed(g, ended=True), view=None)
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                pass
+            if g["winners"]:
+                await channel.send(f"🎉 Congrats {mention}! You won **{g['prize']}**!")
+            else:
+                await channel.send(f"😢 Giveaway **{g['prize']}** ended with no entries.")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    if g["winners"]:
+        return f"✅ Ended — winner(s): {mention}"
+    return "✅ Ended with no entries."
+
+
+async def reroll_giveaway(gid: str) -> str:
+    g = giveaway_data.get(gid)
+    if g is None:
+        return "❌ Giveaway not found."
+    if g.get("status") != "ended":
+        return "⚠️ Only ended giveaways can be rerolled. End it first."
+    entrants = list(g.get("entrants", []))
+    if not entrants:
+        return "😢 No entries to reroll from."
+    prev = set(g.get("winners", []))
+    pool = [u for u in entrants if u not in prev] or entrants
+    n = min(int(g["winners_n"]), len(pool))
+    g["winners"] = random.sample(pool, n)
+    g["rerolls"] = int(g.get("rerolls", 0)) + 1
+    _save_gw(giveaway_data)
+    guild = bot.get_guild(int(g["guild"]))
+    mention = ", ".join(f"<@{w}>" for w in g["winners"])
+    if guild:
+        channel = guild.get_channel(g["channel"])
+        if channel:
+            try:
+                try:
+                    msg = await channel.fetch_message(g["message"])
+                    await msg.edit(embed=gw_embed(g, ended=True))
+                except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                    pass
+                await channel.send(f"🔁 Reroll! New winner(s): {mention} — **{g['prize']}**!")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+    return f"✅ Rerolled — new winner(s): {mention}"
+
+
+@tasks.loop(seconds=30)
+async def gw_loop() -> None:
+    now = time.time()
+    for gid, g in list(giveaway_data.items()):
+        if g.get("status") == "active" and float(g.get("ends_at", 0)) <= now:
+            try:
+                await end_giveaway(gid)
+            except Exception as exc:
+                print(f"[giveaway] auto-end failed {gid}: {exc}")
 
 
 @bot.command(name="rolemenu")
@@ -2799,7 +3047,7 @@ class VerifyView(discord.ui.View):
             await interaction.user.add_roles(role, reason="Self-verify button")
             await interaction.response.send_message(
                 f"✅ Verified! Welcome to **{interaction.guild.name}**.", ephemeral=True)
-            await send_log(interaction.guild, f"✅ {interaction.user} (`{interaction.user.id}`) verified.")
+            await send_log(interaction.guild, f"✅ {interaction.user} (`{interaction.user.id}`) verified.", event="verify")
         except (discord.Forbidden, discord.HTTPException):
             await interaction.response.send_message(
                 "❌ Can't assign role (bot role must be above Verified). Tell an admin.",
@@ -2881,6 +3129,104 @@ async def cmd_verifysetup(ctx: commands.Context, *args: str) -> None:
         pass
     await ctx.send(f"✅ Gate live: {vchan.mention} + `{vrole.name}` — locked {locked} channel(s)"
                    + (f", {skipped} skipped (no perms)." if skipped else "."))
+
+
+@bot.group(name="giveaway", invoke_without_command=True)
+async def cmd_giveaway(ctx: commands.Context) -> None:
+    """Giveaways. Usage: .giveaway create|end|reroll|list|info"""
+    await ctx.send(f"🎁 `{PREFIX}giveaway create <prize> | <duration> | <winners> [#channel]`\n"
+                   f"e.g. `{PREFIX}giveaway create Nitro | 24h | 1`\n"
+                   f"Also: `{PREFIX}giveaway end [id]` · `{PREFIX}giveaway reroll [id]` · "
+                   f"`{PREFIX}giveaway list` · `{PREFIX}giveaway info <id>`")
+
+
+@cmd_giveaway.command(name="create")
+@owner_or_admin()
+async def cmd_giveaway_create(ctx: commands.Context, *, args: str = "") -> None:
+    """Start a giveaway. Usage: .giveaway create Nitro | 24h | 1 [#channel]"""
+    parts = [p.strip() for p in args.split("|")]
+    usage = (f"Usage: `{PREFIX}giveaway create <prize> | <duration> | <winners> [#channel]`\n"
+             f"Duration like `30m`, `2h`, `7d` (1m–30d). Winners 1–10.")
+    if len(parts) < 3:
+        await ctx.send(usage)
+        return
+    try:
+        winners_n = max(1, min(10, int(parts[2])))
+    except ValueError:
+        winners_n = 0
+    dur_s = parse_duration(parts[1])
+    if not parts[0] or dur_s is None or not winners_n:
+        await ctx.send(usage)
+        return
+    target = ctx.channel
+    if len(parts) >= 4 and parts[3]:
+        try:
+            ch = ctx.guild.get_channel(int(parts[3].strip("<#>")))
+            if ch is not None:
+                target = ch
+        except ValueError:
+            pass
+    gid = await create_giveaway(ctx.guild, target, parts[0], dur_s, winners_n, ctx.author.id)
+    await ctx.send(f"🎁 Giveaway started in {target.mention} — id `{gid}`.")
+
+
+@cmd_giveaway.command(name="end")
+@owner_or_admin()
+async def cmd_giveaway_end(ctx: commands.Context, gid: str = "") -> None:
+    """End a giveaway now. Usage: .giveaway end [id]"""
+    g = _gw_find(ctx.guild.id, gid or None, active_only=True)
+    if g is None:
+        await ctx.send("No active giveaway found (try `.giveaway list`).")
+        return
+    await ctx.send(await end_giveaway(g["id"], by=str(ctx.author.id)))
+
+
+@cmd_giveaway.command(name="reroll")
+@owner_or_admin()
+async def cmd_giveaway_reroll(ctx: commands.Context, gid: str = "") -> None:
+    """Pick new winner(s). Usage: .giveaway reroll [id]"""
+    items = [g for g in giveaway_data.values()
+             if g.get("guild") == str(ctx.guild.id) and g.get("status") == "ended"]
+    if gid:
+        items = [g for g in items if g["id"].lower().startswith(gid.strip().lower())]
+    items.sort(key=lambda g: g.get("ended_at", g.get("created", 0)), reverse=True)
+    if not items:
+        await ctx.send("No ended giveaway found (try `.giveaway list`).")
+        return
+    await ctx.send(await reroll_giveaway(items[0]["id"]))
+
+
+@cmd_giveaway.command(name="list")
+async def cmd_giveaway_list(ctx: commands.Context) -> None:
+    """Show giveaways. Usage: .giveaway list"""
+    items = [g for g in giveaway_data.values() if g.get("guild") == str(ctx.guild.id)]
+    if not items:
+        await ctx.send("No giveaways yet. Staff: `.giveaway create <prize> | <duration> | <winners>`")
+        return
+    active = sorted([g for g in items if g.get("status") == "active"], key=lambda g: g["ends_at"])
+    ended = sorted([g for g in items if g.get("status") != "active"],
+                   key=lambda g: g.get("ended_at", g.get("created", 0)), reverse=True)[:5]
+    lines = [f"🟢 **{g['prize']}** — `{g['id']}` · {len(g.get('entrants', []))} entries · "
+             f"ends <t:{int(g['ends_at'])}:R> · <#{g['channel']}>" for g in active]
+    for g in ended:
+        w = ", ".join(f"<@{u}>" for u in g.get("winners", [])) or "no winner"
+        lines.append(f"⚪ **{g['prize']}** — `{g['id']}` · winner(s): {w}")
+    await ctx.send("\n".join(lines)[:1900])
+
+
+@cmd_giveaway.command(name="info")
+async def cmd_giveaway_info(ctx: commands.Context, gid: str = "") -> None:
+    """Show one giveaway. Usage: .giveaway info <id>"""
+    g = _gw_find(ctx.guild.id, gid or None)
+    if g is None:
+        await ctx.send("Giveaway not found (try `.giveaway list`).")
+        return
+    host = ctx.guild.get_member(int(g["host"])) if str(g["host"]).isdigit() and int(g["host"]) else None
+    await ctx.send(embed=E(f"🎁 {g['prize']}",
+        f"Status: **{g['status']}**\nWinners: **{g['winners_n']}**\n"
+        f"Entries: **{len(g.get('entrants', []))}**\nEnds: <t:{int(g['ends_at'])}:R>\n"
+        f"Channel: <#{g['channel']}>\nHost: {host.mention if host else 'the dashboard'}\n"
+        f"Winners: " + (", ".join(f"<@{u}>" for u in g.get("winners", [])) or "—"), kind="info"))
 
 
 @bot.command(name="helpme")
@@ -2991,7 +3337,8 @@ async def cmd_purge(ctx: commands.Context, amount: int = 0,
             deleted = await ctx.channel.purge(limit=amount + 1)  # +1 includes the command
             await ctx.send(f"🧹 Deleted {max(len(deleted) - 1, 0)} message(s).", delete_after=6)
         await send_log(ctx.guild, f"🧹 {ctx.author} purged {amount}"
-                                  f"{f' from {member}' if member else ''} in {ctx.channel.mention}.")
+                                  f"{f' from {member}' if member else ''} in {ctx.channel.mention}.",
+                         event="purge")
     except (discord.Forbidden, discord.HTTPException) as exc:
         await ctx.send(f"❌ Purge failed (need Manage Messages): {exc}")
 
@@ -3007,7 +3354,7 @@ async def cmd_mute(ctx: commands.Context, member: discord.Member, minutes: int =
     try:
         await member.timeout(timedelta(minutes=minutes), reason=f"{ctx.author}: {reason}")
         await ctx.send(f"🔇 {member.display_name} muted {minutes}m.")
-        await send_log(ctx.guild, f"🔇 {ctx.author} muted {member} (`{member.id}`) {minutes}m: {reason}")
+        await send_log(ctx.guild, f"🔇 {ctx.author} muted {member} (`{member.id}`) {minutes}m: {reason}", event="mute")
     except (discord.Forbidden, discord.HTTPException) as exc:
         await ctx.send(f"❌ Mute failed (role order / perms?): {exc}")
 
@@ -3056,6 +3403,7 @@ async def cmd_slowmode(ctx: commands.Context, seconds: int = -1) -> None:
 
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
+    track(member.guild.id, "leave")
     await send_log(member.guild, f"👋 {member} (`{member.id}`) left.")
     cfg = get_config(member.guild.id)
     gchan = member.guild.get_channel(cfg.get("goodbye_channel_id") or 0)

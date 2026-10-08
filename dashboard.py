@@ -258,6 +258,7 @@ box-shadow:0 30px 80px rgba(0,0,0,.6);animation:tin .2s ease}
 .modal .mrow{display:flex;gap:10px;justify-content:flex-end}
 button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 code{background:#1d1d2e;border-radius:6px;padding:1px 7px;font-size:12px}
+.pill.hot{background:#fff;color:#111;border-color:#fff}
 .sbrand .dlogo{width:32px;height:32px;border-radius:50%;flex:0 0 32px;background:#5865F2;
 display:flex;align-items:center;justify-content:center}
 """
@@ -329,7 +330,7 @@ document.addEventListener('submit', function(e) {
       try { path = new URL(f.action, location.origin).pathname; }
       catch (err) { path = f.getAttribute('action') || ''; }
       if (path.indexOf('/api/mod') === 0 || path.indexOf('/api/whitelist') === 0 ||
-          path.indexOf('/api/rolemenu') === 0) {
+          path.indexOf('/api/rolemenu') === 0 || path.indexOf('/api/giveaway') === 0) {
         var card = f.closest('.card');
         if (card && card.id) { try { location.hash = card.id; } catch (err2) {} }
         location.reload();
@@ -486,6 +487,8 @@ NAV = [
                    ("🚨", "Raid", "raid"), ("📝", "Logs", "logs")]),
     ("SERVER", [("🛡️", "Verify", "verify"), ("🎭", "Roles", "roles"),
                ("💬", "Chat", "chat")]),
+    ("COMMUNITY", [("🎁", "Giveaways", "giveaways")]),
+    ("ANALYTICS", [("📊", "Analytics", "analytics")]),
     ("BOT", [("⚙️", "Settings", "settings")]),
 ]
 
@@ -729,7 +732,231 @@ def _automod_groups(guild, cfg, urlkey):
             + "<h3>Content filter</h3>" + F(["automod_caps", "automod_words"]))
 
 
-def _guild_block(guild, cfg, urlkey):
+def _gw_name(guild, uid):
+    m = guild.get_member(int(uid)) if str(uid).isdigit() else None
+    return _esc(m.display_name) if m else f"ID {uid}"
+
+
+def _giveaways_block(guild, urlkey):
+    b = _bot()
+    items = [g for g in getattr(b, "giveaway_data", {}).values()
+             if g.get("guild") == str(guild.id)]
+    active = sorted([g for g in items if g.get("status") == "active"],
+                    key=lambda g: g.get("ends_at", 0))
+    ended = sorted([g for g in items if g.get("status") != "active"],
+                   key=lambda g: g.get("ended_at", g.get("created", 0)), reverse=True)[:10]
+    n_entries = sum(len(g.get("entrants", [])) for g in items)
+    n_winners = sum(len(g.get("winners", [])) for g in items)
+    stats = ("<div class=gridstats>"
+             + _stat("🟢", "ACTIVE GIVEAWAYS", str(len(active)), f"of {len(items)} total")
+             + _stat("🎁", "TOTAL GIVEAWAYS", str(len(items)), "all time")
+             + _stat("👥", "TOTAL ENTRIES", f"{n_entries:,}", "all giveaways")
+             + _stat("🏆", "WINNERS", str(n_winners), "crowned so far") + "</div>")
+    chans = "".join(f"<option value={c.id}>#{_esc(c.name)}</option>" for c in guild.text_channels[:25])
+    dur_opts = "".join(f"<option value={s}>{lab}</option>" for s, lab in
+                       ((900, "15 minutes"), (3600, "1 hour"), (21600, "6 hours"),
+                        (86400, "24 hours"), (259200, "3 days"), (604800, "7 days")))
+    create = _card("New giveaway", "Posts an embed with an Enter button.",
+        f"<form method=post action='/api/giveaway?key={urlkey}'>"
+        f"<input type=hidden name=guild value={guild.id}>"
+        f"<input type=hidden name=action value='create'>"
+        f"<div class=row><label>Prize<small>What the winners get.</small></label>"
+        f"<input type=text name=prize placeholder='Nitro' size=20></div>"
+        f"<div class=row><label>Duration<small>How long entries stay open.</small></label>"
+        f"<select name=duration>{dur_opts}</select></div>"
+        f"<div class=row><label>Winners<small>How many winners (1–10).</small></label>"
+        f"<input type=text name=winners value='1' size=4></div>"
+        f"<div class=row><label>Channel<small>Where the giveaway posts.</small></label>"
+        f"<select name=channel>{chans}</select></div>"
+        f"<div class=row><label>Ready?<small>Entries open immediately.</small></label>"
+        f"<button class=primary>🎁 Create Giveaway</button></div></form>", f"c-{guild.id}-gwnew")
+    cards = ""
+    for g in active:
+        import time as _t
+        left = max(0, int(g["ends_at"] - _t.time()))
+        h, rem = divmod(left, 3600)
+        when = f"{h}h {rem // 60}m" if h else f"{rem // 60}m {rem % 60}s"
+        ch = guild.get_channel(g["channel"])
+        link = (f"<a href='https://discord.com/channels/{guild.id}/{g['channel']}/{g['message']}' "
+                f"target=_blank rel=noopener><button type=button class=dim>View</button></a>"
+                if g.get("message") else "")
+        cards += _card(f"🎁 {_esc(g['prize'])}", f"Ends in {when} · id {g['id']}",
+            f"<div class=row><label>Winners<small>Slots.</small></label><span class=pill>{g['winners_n']}</span></div>"
+            f"<div class=row><label>Entries<small>Button entries.</small></label><span class=pill>{len(g.get('entrants', []))}</span></div>"
+            f"<div class=row><label>Channel<small>Posted here.</small></label><span class=pill>#{_esc(ch.name) if ch else g['channel']}</span></div>"
+            f"<div class=row><label>Status<small>Live now.</small></label><span class='statpill on'>● Active</span></div>"
+            f"<div class=row><label>Actions<small>Open or end early.</small></label>"
+            f"<span>{link}"
+            f"<form method=post action='/api/giveaway?key={urlkey}' style='display:inline' data-confirm='End this giveaway now and pick winners?'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='end'>"
+            f"<input type=hidden name=id value='{g['id']}'><button class=danger>End</button></form>"
+            f"</span></div>", f"c-{guild.id}-gw-{g['id']}", pill=("ACTIVE", "on"))
+    for g in ended:
+        winners = ", ".join(_gw_name(guild, u) for u in g.get("winners", [])) or "no winner"
+        cards += _card(f"🎁 {_esc(g['prize'])}", f"id {g['id']}",
+            f"<div class=row><label>Entries<small>Total button entries.</small></label><span class=pill>{len(g.get('entrants', []))}</span></div>"
+            f"<div class=row><label>Winner(s)<small>Picked randomly.</small></label><span class=pill>{winners}</span></div>"
+            f"<div class=row><label>Status<small>Finished.</small></label><span class='statpill off'>● Ended</span></div>"
+            f"<div class=row><label>Actions<small>Pick new winner(s).</small></label>"
+            f"<form method=post action='/api/giveaway?key={urlkey}' data-confirm='Reroll and pick new winner(s)?'>"
+            f"<input type=hidden name=guild value={guild.id}>"
+            f"<input type=hidden name=action value='reroll'>"
+            f"<input type=hidden name=id value='{g['id']}'><button class=dim>Reroll</button></form></div>",
+            f"c-{guild.id}-gw-{g['id']}", pill=("ENDED", "off"))
+    if not items:
+        cards += ("<div class=empty><b>No giveaways yet</b>"
+                  "<p>Create one above — entries open the moment it posts.</p></div>")
+    return stats + create + cards
+
+
+ANALYTIC_METRICS = (("messages", "Messages"), ("commands", "Commands"), ("xp", "XP"),
+                      ("mod", "Moderation"), ("joins", "Joins"))
+MOD_ACTIONS = ("ban", "kick", "timeout", "mute", "purge", "lockdown", "unlock",
+               "verify", "automod", "raid")
+
+
+def _evs(guild_id):
+    b = _bot()
+    return [e for e in getattr(b, "events_data", []) if e.get("g") == str(guild_id)]
+
+
+def _ev_count(evs, kind, action=None):
+    if action is not None:
+        return sum(1 for e in evs if e.get("k") == kind and e.get("action") == action)
+    return sum(1 for e in evs if e.get("k") == kind)
+
+
+def _delta(cur_n, has_prev, prev_n):
+    if not has_prev:
+        return "no prior data"
+    if prev_n == 0:
+        return "new" if cur_n else "—"
+    return f"{(cur_n - prev_n) / prev_n * 100:+.1f}% vs prior"
+
+
+def _analytics_block(guild, urlkey, days, metric):
+    import time as _t
+    import datetime as _dt
+    from collections import Counter as _Counter
+    days = days if days in (1, 7, 30, 90) else 7
+    now = _t.time()
+    start = now - days * 86400
+    evs = _evs(guild.id)
+    cur = [e for e in evs if e.get("t", 0) >= start]
+    prev = [e for e in evs if e.get("t", 0) < start]
+    has_prev = bool(prev)
+    humans = [m for m in guild.members if not getattr(m, "bot", False)]
+    msgs = _ev_count(cur, "msg")
+    joins = _ev_count(cur, "join")
+    leaves = _ev_count(cur, "leave")
+    mods = _ev_count(cur, "mod")
+    cmds = _ev_count(cur, "cmd")
+    xp_earned = sum(int(e.get("amt", 0)) for e in cur if e.get("k") == "xp")
+    xp_prev = sum(int(e.get("amt", 0)) for e in prev if e.get("k") == "xp")
+    rng = "".join(
+        f"<a href='/?key={urlkey}&days={d}#s{guild.id}-analytics' style='text-decoration:none'>"
+        f"<span class='pill{' hot' if d == days else ''}'>{'Today' if d == 1 else f'{d} Days'}</span></a>"
+        for d in (1, 7, 30, 90))
+    mkey = metric if metric in ("messages", "commands", "xp", "mod", "joins") else "messages"
+    mets = "".join(
+        f"<a href='/?key={urlkey}&days={days}&metric={m}#s{guild.id}-analytics' style='text-decoration:none'>"
+        f"<span class='pill{' hot' if m == mkey else ''}'>{lab}</span></a>"
+        for m, lab in ANALYTIC_METRICS)
+    head = (f"<div class=row><label>Range<small>Period for every number below.</small></label>"
+            f"<span>{rng}</span></div>"
+            f"<div class=row><label>Chart metric<small>What the activity chart shows.</small></label>"
+            f"<span>{mets}</span></div>")
+    out = _card("Range & metric", "Applies to this whole page.", head, f"c-{guild.id}-anrange")
+    if not cur and not has_prev:
+        out += ("<div class=empty><b>No activity tracked yet</b>"
+                "<p>Tracking started with this update — numbers appear as messages, joins, "
+                "commands and mod actions happen.</p></div>")
+        return out
+    out += ("<div class=gridstats>"
+            + _stat("👥", "MEMBERS", str(len(humans)), f"{len(humans)} humans · {len(guild.members) - len(humans)} bots")
+            + _stat("💬", "MESSAGES", f"{msgs:,}", _delta(msgs, has_prev, _ev_count(prev, "msg")))
+            + _stat("📥", "NEW MEMBERS", str(joins), _delta(joins, has_prev, _ev_count(prev, "join")))
+            + _stat("📤", "LEAVES", str(leaves), _delta(leaves, has_prev, _ev_count(prev, "leave")))
+            + _stat("🛡️", "MOD ACTIONS", str(mods), _delta(mods, has_prev, _ev_count(prev, "mod")))
+            + _stat("✨", "XP EARNED", f"{xp_earned:,}", _delta(xp_earned, has_prev, xp_prev))
+            + _stat("⌨️", "COMMANDS USED", str(cmds), _delta(cmds, has_prev, _ev_count(prev, "cmd")))
+            + "</div>")
+    nbuckets = days if days <= 31 else 12
+    span = days * 86400 / nbuckets
+
+    def _bi(t):
+        return min(int((t - start) // span), nbuckets - 1)
+
+    data = [0] * nbuckets
+    for e in cur:
+        k = e.get("k")
+        hit = ((mkey == "messages" and k == "msg") or (mkey == "commands" and k == "cmd")
+               or (mkey == "mod" and k == "mod")
+               or (mkey == "joins" and k in ("join", "leave")))
+        if mkey == "xp" and k == "xp":
+            data[_bi(e.get("t", start))] += int(e.get("amt", 0))
+        elif hit:
+            data[_bi(e.get("t", start))] += 1
+    mx = max(data) or 1
+    labs = [_dt.datetime.fromtimestamp(start + (i + 0.5) * span).strftime("%a" if days <= 14 else "%m/%d")
+            for i in range(nbuckets)]
+    rows = "".join(
+        f"<div class=lb><span class=who>{lab}</span>"
+        f"<span class=track><span class=fill style='width:{int(v * 100 / mx)}%'></span></span>"
+        f"<span class=xp>{v:,}</span></div>" for lab, v in zip(labs, data))
+    out += _card("Activity", f"{dict(ANALYTIC_METRICS)[mkey]} per {'day' if days <= 31 else 'week'}.",
+                 rows or "<p><small>Nothing in this range.</small></p>", f"c-{guild.id}-anchart")
+    net = joins - leaves
+    out += ("<div class=grid2>"
+            + _card("Members", "Growth from tracked joins and leaves.",
+                    f"<div class=row><label>Current<small>Humans right now.</small></label><span class=pill>{len(humans)}</span></div>"
+                    f"<div class=row><label>New<small>Joined in range.</small></label><span class=pill>+{joins}</span></div>"
+                    f"<div class=row><label>Lost<small>Left in range.</small></label><span class=pill>−{leaves}</span></div>"
+                    f"<div class=row><label>Net growth<small>New minus lost.</small></label><span class=pill>{net:+d}</span></div>",
+                    f"c-{guild.id}-anmem"))
+    modrows = "".join(
+        f"<div class=row><label style='text-transform:capitalize'>{a}<small>Tracked {a} actions.</small></label>"
+        f"<span class=pill>{_ev_count(cur, 'mod', a)}</span></div>"
+        for a in MOD_ACTIONS if _ev_count(cur, "mod", a))
+    out += _card("Moderation", "Actions the bot took in range.",
+                 modrows or "<p><small>No moderation actions in this range.</small></p>",
+                 f"c-{guild.id}-anmod") + "</div>"
+    top = _Counter(e.get("name", "?") for e in cur if e.get("k") == "cmd").most_common(8)
+    if top:
+        mxc = top[0][1]
+        crows = "".join(
+            f"<div class=lb><span class=who>{_esc('.' + n)}</span>"
+            f"<span class=track><span class=fill style='width:{int(c * 100 / mxc)}%'></span></span>"
+            f"<span class=xp>{c:,}</span></div>" for n, c in top)
+    else:
+        crows = "<p><small>No commands used in this range.</small></p>"
+    b = _bot()
+    xpmap = getattr(b, "xp_data", {}).get(str(guild.id), {})
+    earners = sum(1 for v in xpmap.values() if isinstance(v, dict) and int(v.get("xp", 0)) > 0)
+    board = sorted(((int(v.get("xp", 0)), uid) for uid, v in xpmap.items() if isinstance(v, dict)),
+                   reverse=True)[:5]
+    if board:
+        xtop = board[0][0] or 1
+        xrows = ""
+        for x, uid in board:
+            m = guild.get_member(int(uid))
+            xrows += (f"<div class=lb><span class=who>{_esc(m.display_name) if m else '—'}</span>"
+                      f"<span class=track><span class=fill style='width:{int(x * 100 / xtop)}%'></span></span>"
+                      f"<span class=xp>{x:,}</span></div>")
+    else:
+        xrows = "<p><small>No XP on the board yet.</small></p>"
+    out += ("<div class=grid2>"
+            + _card("Top commands", "Most-used bot commands in range.", crows, f"c-{guild.id}-ancmd")
+            + _card("XP", "Earned in range, plus all-time board.",
+                    f"<div class=row><label>Earned<small>In this range.</small></label><span class=pill>{xp_earned:,}</span></div>"
+                    f"<div class=row><label>Earners<small>All-time holders.</small></label><span class=pill>{earners}</span></div>"
+                    f"<div class=row><label>Avg / day<small>Earned ÷ days.</small></label><span class=pill>{xp_earned / days:.1f}</span></div>"
+                    + xrows, f"c-{guild.id}-anxp") + "</div>")
+    return out
+
+
+def _guild_block(guild, cfg, urlkey, days=7, metric="messages"):
     gid = guild.id
 
     def F(keys):
@@ -796,6 +1023,10 @@ def _guild_block(guild, cfg, urlkey):
                 F(["qotd_channel_id"]), f"c-{gid}-qotd")
         + _card("Voice", "Join-to-create lobbies and where the bot sits.",
                 F(["lobby_channel_id"]) + _voice_block(guild, cfg, urlkey), f"c-{gid}-voice")))
+    parts.append(_page_sec(gid, "giveaways", "Giveaways", "Create and manage giveaways across your server.",
+        _giveaways_block(guild, urlkey)))
+    parts.append(_page_sec(gid, "analytics", "Server Analytics", "Understand what's happening across your server.",
+        _analytics_block(guild, urlkey, days, metric)))
     return "".join(parts)
 
 
@@ -1112,9 +1343,15 @@ def create_app():
         if not glist:
             return _page("No servers yet.")
         g0 = glist[0]
+        try:
+            days = int(request.args.get("days", 7))
+        except (ValueError, TypeError):
+            days = 7
+        days = days if days in (1, 7, 30, 90) else 7
+        metric = request.args.get("metric", "messages")
         body = _overview(b, glist, g0, b.get_config(g0.id))
         for g in glist:
-            body += _guild_block(g, b.get_config(g.id), key)
+            body += _guild_block(g, b.get_config(g.id), key, days, metric)
         disc = _disc()
         body += _settings_page(b, disc)
         return _page(body, _sidebar(g0, glist), _topbar(bool(disc), len(glist)))
@@ -1239,6 +1476,68 @@ def create_app():
                     except Exception as e:
                         print("[dash] menu duplicate failed:", e)
         return redirect(f"/?key={request.args.get('key', '')}")
+
+    @app.post("/api/giveaway")
+    def api_giveaway():
+        import asyncio as _aio
+        key = request.args.get("key", "")
+        if not _check(key):
+            return "no", 401
+        b = _bot()
+        disc = _disc()
+        if not disc:
+            return redirect(f"/?key={key}")
+        try:
+            gid = int(request.form["guild"])
+        except (ValueError, TypeError, KeyError):
+            return redirect(f"/?key={key}")
+        g = disc.get_guild(gid)
+        if not g:
+            return redirect(f"/?key={key}")
+        action = request.form.get("action")
+        if action == "create":
+            prize = (request.form.get("prize") or "").strip()[:200]
+            try:
+                dur_s = int(request.form.get("duration", 0))
+            except (ValueError, TypeError):
+                dur_s = 0
+            try:
+                winners_n = max(1, min(10, int(request.form.get("winners", 1))))
+            except (ValueError, TypeError):
+                winners_n = 1
+            try:
+                ch_id = int(request.form.get("channel", 0) or 0)
+            except (ValueError, TypeError):
+                ch_id = 0
+            ch = g.get_channel(ch_id)
+            if prize and ch and 60 <= dur_s <= 30 * 86400:
+                fut = _aio.run_coroutine_threadsafe(
+                    b.create_giveaway(g, ch, prize, dur_s, winners_n, 0), disc.loop)
+                try:
+                    fut.result(timeout=20)
+                except Exception as e:
+                    print("[dash] giveaway create failed:", e)
+        elif action == "end":
+            g = b.giveaway_data.get(request.form.get("id", ""))
+            if g is None or g.get("guild") != str(gid):
+                return redirect(f"/?key={key}")
+            fut = _aio.run_coroutine_threadsafe(
+                b.end_giveaway(g["id"], by="dashboard"), disc.loop)
+            try:
+                fut.result(timeout=20)
+            except Exception as e:
+                print("[dash] giveaway end failed:", e)
+        elif action == "reroll":
+            g = b.giveaway_data.get(request.form.get("id", ""))
+            if g is None or g.get("guild") != str(gid):
+                return redirect(f"/?key={key}")
+            fut = _aio.run_coroutine_threadsafe(
+                b.reroll_giveaway(g["id"]), disc.loop)
+            try:
+                fut.result(timeout=20)
+            except Exception as e:
+                print("[dash] giveaway reroll failed:", e)
+        return redirect(f"/?key={key}")
 
     @app.post("/api/whitelist")
     def api_whitelist():
