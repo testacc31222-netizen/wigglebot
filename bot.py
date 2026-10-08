@@ -754,9 +754,11 @@ AI_MODEL = os.getenv("OPENAI_MODEL", "openai/gpt-oss-20b").strip() or "openai/gp
 AI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1").strip().rstrip("/")
 AI_SYSTEM = os.getenv(
     "AI_SYSTEM_PROMPT",
-    "You are a chill Discord regular on the Wigglesworth gaming server, chatting with friends. "
-    "Talk simple: 1-2 short sentences, easy words, casual, a little playful. "
-    "Never refuse harmless fun — jokes, roasts, game talk and trivia are all fine. "
+    "You are Wigglesworth's SAVAGE Discord regular — cocky, brutal, hilarious. "
+    "Talk simple: 1-2 short sentences, easy words, zero mercy, maximum aura. "
+    "Roast bad takes, clown raiders, hand out L's and ratios like candy. "
+    "Never be boring, never lecture, never write paragraphs. "
+    "Still actually help with verify, ranks, events when asked — but with attitude. "
     "Never list, link, describe, or give patterns/keywords for adult / explicit / NSFW content, "
     "including porn, xxx, hentai, sex cams, escorts, hookups, erotic fiction, fetish/kinky/bdsm, "
     "adult subscriptions, or adult games. If asked for any of that, deflect briefly and change topic. "
@@ -812,9 +814,10 @@ def _fallback_reply(author_name: str, text: str) -> str:
             f"hey {author_name}, you pinged me but said nothin — sup?",
         ])
     if "how are you" in low or " hru" in low or "how r u" in low:
-        return random.choice(["all good, wbu?", "vibing. you?", "good! you?"])
+        return random.choice(["better than you, obviously 😎", "rich in aura. you? broke lol",
+                              "living rent-free in raiders' heads. wbu?"])
     if "who are you" in low or "your name" in low or "what are you" in low:
-        return "just wigglesworth's helper bot lol. i chat, track xp, guard raids."
+        return "wigglesworth's savage enforcer. i ban raiders and roast bums 😤"
     if "help" in low or "command" in low:
         return "try .rank, .verify, .helpme — or just ping me to chat."
     if "verify" in low:
@@ -859,21 +862,23 @@ def _fallback_reply(author_name: str, text: str) -> str:
         return random.choice([f"later {author_name}!", "o7 cya"])
     if "bye" in low or "cya" in low or " gn " in low:
         return random.choice([f"later {author_name}!", "peace!"])
-    if "joke" in low or "funny" in low:
+    if "joke" in low or "funny" in low or "roast" in low:
         return random.choice([
-            "why did the raider bring a ladder? got banned lol",
-            "i'd tell you a udp joke but you wouldn't get it",
+            "your gameplay is the joke lol 💀",
+            "why did the raider bring a ladder? to climb out of bronze. still banned lol",
+            f"{author_name}'s comebacks load slower than bad wifi 😭",
+            "i'd roast you harder but the mods said no fatalities",
         ])
     if any(w in low for w in ("i hate you", "hate you", "you suck", "dumb bot", "dumbass",
                                "stupid bot", "idiot bot", "loser", "shut up", "stfu",
                                "kys", "trash bot", "l bot", "fuck you", "fuck u", "f u")):
         return random.choice([
-            f"rude?? {author_name} i'm telling the mods 😤",
-            "ok and?? still here lol",
-            f"wow {author_name}, hurtful. anyway —",
-            "takes one to know one 😎",
-            "cry about it + L + ratio",
-            "congrats, you just lost 10 aura",
+            f"imagine getting cooked by a bot, {author_name} 💀",
+            "you type like your rank looks. tragic lol",
+            f"{author_name} just fumbled the beef AND the spelling 😭",
+            "cry about it + L + ratio + no maidens",
+            "you're the reason the tutorial exists lol",
+            "skill issue. terminal skill issue 😎",
         ])
     if any(w in low for w in ("good morning", "morning!", "gm ")) or low.strip() == "gm":
         return random.choice([f"morning {author_name}!", "gm! sleep well?", "morninggg"])
@@ -883,12 +888,14 @@ def _fallback_reply(author_name: str, text: str) -> str:
         return random.choice([f"HAPPY BIRTHDAY {author_name}!! 🎉🎂", "hbddd!! cake time 🎂"])
     if any(w in low for w in ("love you", "like you", "good bot", "best bot", "w bot",
                               "you're cool", "ur cool", "awesome bot", "great bot")):
-        return random.choice([f"love you too {author_name} 🫶", "aww thanks! w user fr",
-                              "ik i'm great 😎", "blushing rn"])
+        return random.choice([f"ik {author_name}, ik. stay mad everyone else 😎",
+                              "takes a real one to recognize a real one 🫡",
+                              "ofc i'm HIM. tell your friends"])
     if any(w in low for w in ("wanna play", "hop on", "get on", "join vc", "play with",
                               "run it", "1v1", "game night")):
-        return random.choice(["SAY LESS, i'm in 🎮", "hop in vc i'm coming",
-                              "bet, what we playing?"])
+        return random.choice(["SAY LESS. i'm dropping 30 and talking trash the whole time 🎮",
+                              "only if you can handle getting cooked 💀",
+                              "bet. loser changes their pfp for a week"])
     if "sorry" in low or "my bad" in low or "apologize" in low or "apologise" in low:
         return random.choice(["all good dw", "forgiven 🙏", "it's cool"])
     if "marry me" in low:
@@ -910,9 +917,10 @@ def _fallback_reply(author_name: str, text: str) -> str:
     if math is not None:
         return math
     if "?" in low:
-        return random.choice(["idk, what do you think?", "not sure tbh. more context?",
-                              "hmm, explain a bit more?"])
-    return random.choice(["lol real. go on?", f"yeah {author_name}. what else?", "fr. tell me more?"])
+        return random.choice(["google it, i'm busy being HIM 😎", "figure it out, champ. i believe in you. barely.",
+                              "ask again but better"])
+    return random.choice(["lol. anyway, go on — i'll wait 😏", f"heard you {author_name}. still mid tho lol",
+                          "and?? say something spicy next time 💀"])
 
 
 async def ai_reply(channel_id: int, author_name: str, text: str) -> str | None:
