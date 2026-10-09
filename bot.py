@@ -16,6 +16,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import aiohttp
 import security
+import community
 
 load_dotenv()
 
@@ -214,6 +215,9 @@ DEFAULT_GUILD_CONFIG = {
     "phish_trusted": [],          # exact/suffix domains never flagged
     "phish_blocked": [],          # exact/suffix domains always blocked
     "phish_rep_enabled": False,   # external reputation (needs PHISH_REP_URL env)
+    # --- community expansion (additive; old installs merge these automatically)
+    "suggest_channel_id": None,   # suggestions publish here
+    "wizard_done": [],            # setup-wizard completed step ids
     # NOTE: the raid initiator is ALWAYS banned, regardless of raid_action.
 }
 
@@ -485,17 +489,25 @@ async def punish_member(member: discord.Member, action: str, reason: str, cfg: d
     try:
         if action == "ban":
             await member.ban(reason=reason, delete_message_days=1)
-            return "banned"
-        if action == "kick":
+            outcome = "banned"
+        elif action == "kick":
             await member.kick(reason=reason)
-            return "kicked"
-        if action == "timeout":
+            outcome = "kicked"
+        elif action == "timeout":
             mins = int(cfg.get("timeout_duration_minutes", 10))
             await member.timeout(timedelta(minutes=mins), reason=reason)
-            return f"timed out ({mins}m)"
+            outcome = f"timed out ({mins}m)"
+        else:
+            return "none"
+        try:
+            community.open_case(member.guild.id, member.id,
+                                getattr(member, "display_name", str(member)),
+                                0, "auto", action, reason)
+        except Exception:
+            pass
+        return outcome
     except (discord.Forbidden, discord.HTTPException) as exc:
         return f"FAILED ({exc})"
-    return "none"
 
 
 async def schedule_auto_unlock(guild: discord.Guild, cfg: dict) -> None:
@@ -602,6 +614,7 @@ async def on_ready() -> None:
     print(f"Logged in as {bot.user} — watching {len(bot.guilds)} guild(s).")
     import sys as _sys
     security.setup(_sys.modules[__name__])  # idempotent; registers security listeners
+    community.setup(_sys.modules[__name__])  # idempotent; commands, views, scheduler
     bot.add_view(VerifyView())  # keep the ✅ button alive across restarts
     bot.add_view(TicketOpenView())
     bot.add_view(TicketCloseView())
@@ -818,6 +831,12 @@ async def on_message(message: discord.Message) -> None:
                 f"🎉 {message.author.mention} leveled up to **level {level}** ({xp} XP)!"
             )
         except (discord.Forbidden, discord.HTTPException):
+            pass
+    if content.startswith(PREFIX):
+        try:
+            if await community.try_custom(message, content):
+                return
+        except Exception:
             pass
     await bot.process_commands(message)
 
@@ -1854,6 +1873,12 @@ async def automod_check(message: discord.Message) -> bool:
             await send_log(message.guild,
                            f"🔇 {message.author} (`{message.author.id}`) auto-muted: 3 automod strikes.",
                            event="mute")
+            try:
+                community.open_case(message.guild.id, message.author.id,
+                                    getattr(message.author, "display_name", str(message.author)),
+                                    0, "auto", "timeout", "Automod: 3 strikes")
+            except Exception:
+                pass
         except (discord.Forbidden, discord.HTTPException):
             pass
     return True
@@ -3452,6 +3477,12 @@ async def cmd_mute(ctx: commands.Context, member: discord.Member, minutes: int =
         await member.timeout(timedelta(minutes=minutes), reason=f"{ctx.author}: {reason}")
         await ctx.send(f"🔇 {member.display_name} muted {minutes}m.")
         await send_log(ctx.guild, f"🔇 {ctx.author} muted {member} (`{member.id}`) {minutes}m: {reason}", event="mute")
+        try:
+            community.open_case(ctx.guild.id, member.id, member.display_name,
+                                ctx.author.id, str(ctx.author), "mute",
+                                f"{minutes}m: {reason}")
+        except Exception:
+            pass
     except (discord.Forbidden, discord.HTTPException) as exc:
         await ctx.send(f"❌ Mute failed (role order / perms?): {exc}")
 

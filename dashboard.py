@@ -79,6 +79,7 @@ SCHEMA: dict[str, tuple[str, str]] = {
     "phish_trusted": ("words", "Trusted domains (comma separated)"),
     "phish_blocked": ("words", "Blocked domains (comma separated)"),
     "phish_rep_enabled": ("bool", "External reputation checks (needs server env)"),
+    "suggest_channel_id": ("channel", "Suggestions publish here"),
 }
 
 SECTIONS = [
@@ -269,6 +270,8 @@ background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.35
 .empty{border:1px dashed var(--line2);border-radius:12px;padding:22px;text-align:center;color:var(--mut)}
 .empty b{color:var(--txt);display:block;margin-bottom:4px}
 .empty p{font-size:12.5px}
+.embedprev{border-left:3px solid var(--acc);background:#101516;border:1px solid var(--line);
+border-radius:8px;padding:10px 12px;margin:4px 0;max-width:420px}
 .modalback{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px}
 .modal{background:#151522;border:1px solid var(--line2);border-radius:16px;padding:22px;max-width:380px;width:100%;
 box-shadow:0 30px 80px rgba(0,0,0,.6);animation:tin .2s ease}
@@ -357,9 +360,23 @@ function clearDirty(f) {
 }
 document.addEventListener('input', function(e) {
   var f = e.target && e.target.closest ? e.target.closest('form[method=post]') : null;
-  if (!f) return;
-  var row = f.closest('.row');
-  if (row) row.classList.add('dirty');
+  if (f) {
+    var row = f.closest('.row');
+    if (row) row.classList.add('dirty');
+  }
+  var prev = document.getElementById('cc-prev');
+  if (prev) {
+    var card = prev.closest('.card');
+    var scope = card || document;
+    var t = scope.querySelector('input[name=title]');
+    var r = scope.querySelector('input[name=response]');
+    var tt = t && t.value ? t.value : 'Title shows here';
+    var rr = r && r.value ? r.value : 'Response shows here';
+    prev.innerHTML = '';
+    var b = document.createElement('b'); b.textContent = tt;
+    prev.appendChild(b); prev.appendChild(document.createElement('br'));
+    prev.appendChild(document.createTextNode(rr));
+  }
 });
 document.addEventListener('change', function(e) {
   var f = e.target && e.target.closest ? e.target.closest('form[method=post]') : null;
@@ -385,7 +402,8 @@ document.addEventListener('submit', function(e) {
       try { path = new URL(f.action, location.origin).pathname; }
       catch (err) { path = f.getAttribute('action') || ''; }
       if (path.indexOf('/api/mod') === 0 || path.indexOf('/api/whitelist') === 0 ||
-          path.indexOf('/api/rolemenu') === 0 || path.indexOf('/api/giveaway') === 0) {
+          path.indexOf('/api/rolemenu') === 0 || path.indexOf('/api/giveaway') === 0 ||
+          path.indexOf('/api/community') === 0 || path.indexOf('/api/sec') === 0) {
         var card = f.closest('.card');
         if (card && card.id) { try { location.hash = card.id; } catch (err2) {} }
         location.reload();
@@ -539,13 +557,17 @@ document.addEventListener('click', function(e) {
 NAV = [
     ("OVERVIEW", [("🏠", "Dashboard", "overview")]),
     ("MODERATION", [("🤖", "Automod", "automod"), ("🚩", "Abuse Protection", "abuse"),
-                   ("🚨", "Raid Protection", "raid"), ("📝", "Logs", "logs")]),
+                   ("🚨", "Raid Protection", "raid"), ("📝", "Logs", "logs"),
+                   ("📁", "Cases", "cases")]),
     ("SECURITY", [("🛡️", "Anti-Nuke", "antinuke"), ("🔑", "Permission Monitor", "permwatch"),
                   ("🩺", "Security Diagnostics", "secdiag"), ("📋", "Incidents", "incidents"),
                   ("🚑", "Emergency Response", "emergency")]),
     ("SERVER", [("🛡️", "Verify", "verify"), ("🎭", "Roles", "roles"),
-               ("💬", "Chat", "chat")]),
-    ("COMMUNITY", [("🎁", "Giveaways", "giveaways")]),
+               ("💬", "Chat", "chat"), ("💾", "Backups", "backups"),
+               ("🧭", "Setup Wizard", "wizard")]),
+    ("COMMUNITY", [("🎁", "Giveaways", "giveaways"), ("🔧", "Custom Commands", "custom"),
+                   ("💡", "Suggestions", "suggest"), ("📢", "Announcements", "announce"),
+                   ("📝", "Applications", "apply"), ("📅", "Events", "events")]),
     ("ANALYTICS", [("📊", "Analytics", "analytics")]),
     ("BOT", [("⚙️", "Settings", "settings")]),
 ]
@@ -677,6 +699,7 @@ DESCRIPTIONS = {
     "phish_trusted": "These domains are never flagged.",
     "phish_blocked": "These domains are always blocked.",
     "phish_rep_enabled": "Ask threat intel about unknown links. Needs server env.",
+    "suggest_channel_id": "New suggestions post here.",
 }
 
 
@@ -1036,6 +1059,7 @@ def _analytics_block(guild, urlkey, hours, metric):
 
 def _guild_block(guild, cfg, urlkey, hours=168, metric="messages"):
     import security_web as _secw
+    import community_web as _cw
     gid = guild.id
 
     def F(keys):
@@ -1093,7 +1117,8 @@ def _guild_block(guild, cfg, urlkey, hours=168, metric="messages"):
               pill=("ON", "on") if v_on else ("OFF", "off"))))
     parts.append(_page_sec(gid, "roles", "Roles", "Self-serve role menus members opt into.",
         _card("Reaction roles", "Menus post as embeds with toggle buttons.",
-              _rolemenu_block(guild, urlkey), f"c-{gid}-roles")))
+              _rolemenu_block(guild, urlkey), f"c-{gid}-roles")
+        + _cw.temprole_card(guild, cfg, urlkey)))
     parts.append(_page_sec(gid, "chat", "Chat", "Talkative features and voice.",
         _card("Chatbot", "Replies, mood and reactions. Mood applies instantly.",
               F(["chat_enabled", "chat_channel_id", "bot_mood", "autoreact"]), f"c-{gid}-chat",
@@ -1117,6 +1142,22 @@ def _guild_block(guild, cfg, urlkey, hours=168, metric="messages"):
         _secw.page_incidents(guild, cfg, urlkey)))
     parts.append(_page_sec(gid, "emergency", "Emergency Response", "Lock down, recover, stand down.",
         _secw.page_emergency(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "cases", "Cases", "Per-user moderation records. Logs stay untouched.",
+        _cw.page_cases(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "custom", "Custom Commands", "No-code bot commands for this server.",
+        _cw.page_custom(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "suggest", "Suggestions", "Community ideas, voted and reviewed.",
+        _cw.page_suggest(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "announce", "Announcements", "Drafts, schedules and delivery results.",
+        _cw.page_announce(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "apply", "Applications", "Forms, submissions and private reviews.",
+        _cw.page_apps(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "events", "Events", "RSVPs, waitlists and reminders.",
+        _cw.page_events(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "backups", "Backups", "Snapshots of bot configuration. Never Discord messages.",
+        _cw.page_backups(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "wizard", "Setup Wizard", "Guided checklist. Never overwrites settings.",
+        _cw.page_wizard(guild, cfg, urlkey)))
     return "".join(parts)
 
 
@@ -1900,6 +1941,8 @@ def create_app():
 
     import security_web as _secweb
     _secweb.register(app, {"check": _check, "bot": _bot, "disc": _disc})
+    import community_web as _commweb
+    _commweb.register(app, {"check": _check, "bot": _bot, "disc": _disc})
     return app
 
 
