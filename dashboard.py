@@ -60,6 +60,25 @@ SCHEMA: dict[str, tuple[str, str]] = {
     "lockdown_duration_minutes": ("int", "Auto-unlock minutes (0 = manual)"),
     "new_account_age_days": ("int", "Flag accounts younger than (days)"),
     "timeout_duration_minutes": ("int", "Mute length minutes"),
+    "antinuke_enabled": ("bool", "Anti-nuke master switch"),
+    "antinuke_window": ("int", "Burst window seconds"),
+    "antinuke_chandel": ("int", "Max channel deletes / window"),
+    "antinuke_chancr": ("int", "Max channel creates / window"),
+    "antinuke_roledel": ("int", "Max role deletes / window"),
+    "antinuke_rolecr": ("int", "Max role creates / window"),
+    "antinuke_ban": ("int", "Max bans / window"),
+    "antinuke_kick": ("int", "Max kicks / window"),
+    "antinuke_webhook": ("int", "Max webhook changes / window"),
+    "antinuke_perm": ("int", "Max permission changes / window"),
+    "antinuke_sensitivity": ("int", "Sensitivity 1 = alert only, 2+ = quarantine when confirmed"),
+    "sec_auto_strip": ("bool", "Quarantine suspects (strip roles, never ban)"),
+    "sec_alert_channel": ("channel", "Security alert channel (blank = log channel)"),
+    "permwatch_enabled": ("bool", "Watch permission changes"),
+    "permwatch_admin_only": ("bool", "Only alert on admin-level grants"),
+    "phish_enabled": ("bool", "Block malicious links"),
+    "phish_trusted": ("words", "Trusted domains (comma separated)"),
+    "phish_blocked": ("words", "Blocked domains (comma separated)"),
+    "phish_rep_enabled": ("bool", "External reputation checks (needs server env)"),
 }
 
 SECTIONS = [
@@ -521,6 +540,9 @@ NAV = [
     ("OVERVIEW", [("🏠", "Dashboard", "overview")]),
     ("MODERATION", [("🤖", "Automod", "automod"), ("🚩", "Abuse Protection", "abuse"),
                    ("🚨", "Raid Protection", "raid"), ("📝", "Logs", "logs")]),
+    ("SECURITY", [("🛡️", "Anti-Nuke", "antinuke"), ("🔑", "Permission Monitor", "permwatch"),
+                  ("🩺", "Security Diagnostics", "secdiag"), ("📋", "Incidents", "incidents"),
+                  ("🚑", "Emergency Response", "emergency")]),
     ("SERVER", [("🛡️", "Verify", "verify"), ("🎭", "Roles", "roles"),
                ("💬", "Chat", "chat")]),
     ("COMMUNITY", [("🎁", "Giveaways", "giveaways")]),
@@ -636,6 +658,25 @@ DESCRIPTIONS = {
     "qotd_channel_id": "Daily question posts here.",
     "abuse_role_id": "Role pinged by .abuse.",
     "abuse_channel_id": "Blank = wherever .abuse is used.",
+    "antinuke_enabled": "Burst detection for destructive actions.",
+    "antinuke_window": "Time window burst counting uses.",
+    "antinuke_chandel": "Channel deletes allowed per window.",
+    "antinuke_chancr": "Channel creates allowed per window.",
+    "antinuke_roledel": "Role deletes allowed per window.",
+    "antinuke_rolecr": "Role creates allowed per window.",
+    "antinuke_ban": "Bans allowed per window.",
+    "antinuke_kick": "Kicks allowed per window.",
+    "antinuke_webhook": "Webhook changes allowed per window.",
+    "antinuke_perm": "Permission changes allowed per window.",
+    "antinuke_sensitivity": "1 alerts only, 2+ may quarantine confirmed actors.",
+    "sec_auto_strip": "Strip roles below the bot from confirmed suspects. Never bans.",
+    "sec_alert_channel": "Blank = log channel with fallbacks.",
+    "permwatch_enabled": "Alert on dangerous permission grants.",
+    "permwatch_admin_only": "Only admin-level grants alert.",
+    "phish_enabled": "Delete messages with malicious links.",
+    "phish_trusted": "These domains are never flagged.",
+    "phish_blocked": "These domains are always blocked.",
+    "phish_rep_enabled": "Ask threat intel about unknown links. Needs server env.",
 }
 
 
@@ -994,6 +1035,7 @@ def _analytics_block(guild, urlkey, hours, metric):
 
 
 def _guild_block(guild, cfg, urlkey, hours=168, metric="messages"):
+    import security_web as _secw
     gid = guild.id
 
     def F(keys):
@@ -1006,7 +1048,8 @@ def _guild_block(guild, cfg, urlkey, hours=168, metric="messages"):
     parts.append(_page_sec(gid, "automod", "Automod", "Automatic message filtering.",
         _card("Automod", "Tuned per category. Switches save instantly.",
               _automod_groups(guild, cfg, urlkey), f"c-{gid}-automod",
-              pill=(f"{am_on}/5 ON", "on" if am_on else "off"))))
+              pill=(f"{am_on}/5 ON", "on" if am_on else "off"))
+        + _secw.phishing_card(guild, cfg, urlkey)))
     _gr = getattr(guild, "get_role", None)
     abuse_role = _gr(cfg.get("abuse_role_id") or 0) if _gr else None
     abuse_armed = cfg.get("raid_action", "ban") != "none"
@@ -1064,6 +1107,16 @@ def _guild_block(guild, cfg, urlkey, hours=168, metric="messages"):
         _giveaways_block(guild, urlkey)))
     parts.append(_page_sec(gid, "analytics", "Server Analytics", "Understand what's happening across your server.",
         _analytics_block(guild, urlkey, hours, metric)))
+    parts.append(_page_sec(gid, "antinuke", "Anti-Nuke", "Burst detection for destructive actions.",
+        _secw.page_antinuke(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "permwatch", "Permission Monitor", "Dangerous permission changes.",
+        _secw.page_permwatch(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "secdiag", "Security Diagnostics", "Is the bot actually able to protect you?",
+        _secw.page_diag(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "incidents", "Incidents", "Detections, timelines and response.",
+        _secw.page_incidents(guild, cfg, urlkey)))
+    parts.append(_page_sec(gid, "emergency", "Emergency Response", "Lock down, recover, stand down.",
+        _secw.page_emergency(guild, cfg, urlkey)))
     return "".join(parts)
 
 
@@ -1364,7 +1417,15 @@ def _overview(b, guilds, g0, cfg, urlkey, hours):
             + f"<div class=grid2>"
             + _card("Server", "Activity and account statistics.", left, f"c-{g0.id}-ovserver")
             + _card("Moderation", "Protection status and recent events.", right, f"c-{g0.id}-ovmod")
-            + "</div></section>")
+            + "</div>"
+            + _card("Security", "Anti-nuke, incidents and diagnostics at a glance.",
+                    _secw_overview_security(g0, cfg), f"c-{g0.id}-ovsec")
+            + "</section>")
+
+
+def _secw_overview_security(guild, cfg):
+    import security_web as _secw
+    return _secw.overview_security(guild, cfg)
 
 
 def _settings_page(b, disc):
@@ -1490,6 +1551,27 @@ def _weekheat(b, guilds):
             f"<span><i class='dot' style='background:#a855f7'></i></span><span>More</span></div></div>")
 
 
+_RL: dict = {}
+
+
+def _ratelimit(key, endpoint, limit=10, window=60) -> bool:
+    """Tiny in-memory rate limiter for sensitive endpoints. True = allowed."""
+    import time as _t
+    now = _t.time()
+    dq = _RL.setdefault((key, endpoint), [])
+    while dq and now - dq[0] > window:
+        dq.pop(0)
+    if len(_RL) > 500:
+        _RL.clear()
+    if len(dq) >= limit:
+        return False
+    dq.append(now)
+    return True
+
+
+SEC_LOGGED_PREFIXES = ("antinuke_", "sec_", "permwatch_", "phish_")
+
+
 def create_app():
     try:
         from flask import Flask, request, redirect, make_response
@@ -1560,6 +1642,11 @@ def create_app():
         else:
             val = raw[:50]
         b.update_config(gid, **{name: val})
+        if name.startswith(SEC_LOGGED_PREFIXES):
+            try:
+                b.track(gid, "sec", action="config", key=name)
+            except Exception:
+                pass
         return redirect(f"/?key={key}")
 
     @app.post("/api/rolemenu")
@@ -1744,6 +1831,8 @@ def create_app():
     def api_mod():
         if not _check(request.args.get("key", "")):
             return "no", 401
+        if not _ratelimit(request.args.get("key", ""), "mod"):
+            return "slow down", 429
         import asyncio as _aio
         b = _bot()
         disc = _disc()
@@ -1809,6 +1898,8 @@ def create_app():
             print("[dash] mod action failed:", e)
         return redirect(f"/?key={request.args.get('key', '')}")
 
+    import security_web as _secweb
+    _secweb.register(app, {"check": _check, "bot": _bot, "disc": _disc})
     return app
 
 

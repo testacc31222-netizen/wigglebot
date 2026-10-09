@@ -15,6 +15,7 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import aiohttp
+import security
 
 load_dotenv()
 
@@ -193,6 +194,26 @@ DEFAULT_GUILD_CONFIG = {
     "abuse_channel_id": None,   # channel the abuse ping goes to (blank = where used)
     "welcome_channel_id": None,
     "goodbye_channel_id": None,
+    # --- security expansion (additive; old installs merge these automatically)
+    "antinuke_enabled": False,
+    "antinuke_window": 60,        # seconds per burst window
+    "antinuke_chandel": 3,        # max channel deletes / window
+    "antinuke_chancr": 3,         # max channel creates / window
+    "antinuke_roledel": 3,        # max role deletes / window
+    "antinuke_rolecr": 3,         # max role creates / window
+    "antinuke_ban": 4,            # max bans / window
+    "antinuke_kick": 5,           # max kicks / window
+    "antinuke_webhook": 2,        # max webhook changes / window
+    "antinuke_perm": 3,           # max permission changes / window
+    "antinuke_sensitivity": 2,    # 1 = alert only, 2+ = quarantine when actor confirmed
+    "sec_auto_strip": False,      # quarantine (strip roles below bot) on confirmed nuke
+    "sec_alert_channel": None,    # reserved; alerts use log channel w/ fallbacks
+    "permwatch_enabled": True,
+    "permwatch_admin_only": True,  # only admin/manage_* grants alert
+    "phish_enabled": True,
+    "phish_trusted": [],          # exact/suffix domains never flagged
+    "phish_blocked": [],          # exact/suffix domains always blocked
+    "phish_rep_enabled": False,   # external reputation (needs PHISH_REP_URL env)
     # NOTE: the raid initiator is ALWAYS banned, regardless of raid_action.
 }
 
@@ -579,6 +600,8 @@ async def trigger_raid(guild: discord.Guild, cfg: dict, recent_members: list[dis
 @bot.event
 async def on_ready() -> None:
     print(f"Logged in as {bot.user} — watching {len(bot.guilds)} guild(s).")
+    import sys as _sys
+    security.setup(_sys.modules[__name__])  # idempotent; registers security listeners
     bot.add_view(VerifyView())  # keep the ✅ button alive across restarts
     bot.add_view(TicketOpenView())
     bot.add_view(TicketCloseView())
@@ -1796,6 +1819,9 @@ async def automod_check(message: discord.Message) -> bool:
             dq.popleft()
         if sum(1 for _, x in dq if x == h) >= SPAM_COUNT:
             reason = f"stop repeating yourself ({SPAM_COUNT}x in {SPAM_WINDOW_S}s)"
+    if not reason:
+        # separate intelligence layer (own settings, own incidents) reusing this pipeline
+        reason = await security.phish_reason(message, cfg) or ""
     if not reason:
         return False
     try:
