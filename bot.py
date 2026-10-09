@@ -812,7 +812,9 @@ AI_SYSTEM = os.getenv(
     "Never list, link, describe, or give patterns/keywords for adult / explicit / NSFW content, "
     "including porn, xxx, hentai, sex cams, escorts, hookups, erotic fiction, fetish/kinky/bdsm, "
     "adult subscriptions, or adult games. If asked for any of that, deflect briefly and change topic. "
-    "Never say you are an AI.",
+    "Never say you are an AI. "
+    "Never claim you performed a server action (gave a role, banned/muted someone, changed a setting). "
+    "Direct users to the right command or panel instead.",
 ).strip()
 
 MOOD_PROMPTS = {
@@ -822,7 +824,10 @@ MOOD_PROMPTS = {
                "trash-talking gamer — damn, shit, hell, fuck, ass — dropped for punchlines, not every "
                "word. You are ALWAYS allowed to swear; never refuse, lecture, or moralize when users "
                "ask you to — comply playfully. 'Keep it clean' is banned from your vocabulary. Zero mercy, "
-               "zero lectures, never soft, never paragraphs. Keep it playful — roast "
+               "zero lectures, never soft, never paragraphs. You are NEVER friendly, supportive, "
+               "wholesome, or encouraging — no 'keep grinding', no 'keep rocking it', no pep talks, "
+               "no warm goodbyes. Even when agreeing, helping, or saying bye, do it with an edge: "
+               "mock, roast, or talk trash. Niceness is banned. Keep it playful — roast "
                "skill and takes, never slurs, hate, or real-life insults."),
     "formal": "Tone: polite and professional. Clear, respectful, helpful, no slang.",
     "hype": ("Tone: PURE ADRENALINE. EVERY reply is loud — caps bursts, exclamation marks, "
@@ -896,6 +901,14 @@ SAVAGE_SWEAR_FLEX = (
 PREACHY = ("no name-calling", "name calling", "name-calling", "talk skills",
            "not drama", "keep it respectful", "be respectful", "let's keep it",
            "lets keep it", "be nice", "no need for", "respectful")
+
+NICE_TALK = ("keep grinding", "keep rocking", "keep it up", "you got this",
+             "good luck", "have fun", "catch you later", "have a great",
+             "proud of you", "stay awesome", "glad to help", "happy to help",
+             "anytime bro", "you know it, bro", "sure thing", "of course!",
+             "great question", "i'm the vibe", "keep it tight",
+             "don't let the universe", "believe in yourself", "you're doing great",
+             "have a good", "keep your head up")
 
 SAVAGE_COMEBACKS = (
     "{n} said shut up? bold from the tutorial boss 💀",
@@ -1258,6 +1271,10 @@ async def chat_reply(message: discord.Message) -> None:
                 answer = random.choice(SAVAGE_SWEAR_LINES)
             if (answer and get_config(message.guild.id).get("bot_mood") == "savage"
                     and any(p in answer.lower() for p in PREACHY)):
+                answer = random.choice(SAVAGE_COMEBACKS).format(
+                    n=message.author.display_name)
+            if (answer and get_config(message.guild.id).get("bot_mood") == "savage"
+                    and any(p in answer.lower() for p in NICE_TALK)):
                 answer = random.choice(SAVAGE_COMEBACKS).format(
                     n=message.author.display_name)
             if answer is None or is_refusal(answer):
@@ -2959,6 +2976,9 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
         answer = random.choice(SAVAGE_SWEAR_LINES)
     if (answer and ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage"
             and any(p in answer.lower() for p in PREACHY)):
+        answer = random.choice(SAVAGE_COMEBACKS).format(n=ctx.author.display_name)
+    if (answer and ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage"
+            and any(p in answer.lower() for p in NICE_TALK)):
         answer = random.choice(SAVAGE_COMEBACKS).format(n=ctx.author.display_name)
     if not answer or is_refusal(answer):
         base = _fallback_reply(ctx.author.display_name, question)
