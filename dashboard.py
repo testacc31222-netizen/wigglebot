@@ -1799,48 +1799,51 @@ def create_app():
         if not g:
             return redirect(f"/?key={key}")
         action = request.form.get("action")
-        if action == "create":
-            prize = (request.form.get("prize") or "").strip()[:200]
-            try:
-                dur_s = int(request.form.get("duration", 0))
-            except (ValueError, TypeError):
-                dur_s = 0
-            try:
-                winners_n = max(1, min(10, int(request.form.get("winners", 1))))
-            except (ValueError, TypeError):
-                winners_n = 1
-            try:
-                ch_id = int(request.form.get("channel", 0) or 0)
-            except (ValueError, TypeError):
-                ch_id = 0
-            ch = g.get_channel(ch_id)
-            if prize and ch and 60 <= dur_s <= 30 * 86400:
+        try:
+            if action == "create":
+                prize = (request.form.get("prize") or "").strip()[:200]
+                try:
+                    dur_s = int(request.form.get("duration", 0))
+                except (ValueError, TypeError):
+                    dur_s = 0
+                try:
+                    winners_n = max(1, min(10, int(request.form.get("winners", 1))))
+                except (ValueError, TypeError):
+                    winners_n = 1
+                try:
+                    ch_id = int(request.form.get("channel", 0) or 0)
+                except (ValueError, TypeError):
+                    ch_id = 0
+                ch = g.get_channel(ch_id)
+                if prize and ch and 60 <= dur_s <= 30 * 86400:
+                    fut = _aio.run_coroutine_threadsafe(
+                        b.create_giveaway(g, ch, prize, dur_s, winners_n, 0), disc.loop)
+                    try:
+                        fut.result(timeout=20)
+                    except Exception as e:
+                        print("[dash] giveaway create failed:", e)
+            elif action == "end":
+                g = b.giveaway_data.get(request.form.get("id", ""))
+                if g is None or g.get("guild") != str(gid):
+                    return redirect(f"/?key={key}")
                 fut = _aio.run_coroutine_threadsafe(
-                    b.create_giveaway(g, ch, prize, dur_s, winners_n, 0), disc.loop)
+                    b.end_giveaway(g["id"], by="dashboard"), disc.loop)
                 try:
                     fut.result(timeout=20)
                 except Exception as e:
-                    print("[dash] giveaway create failed:", e)
-        elif action == "end":
-            g = b.giveaway_data.get(request.form.get("id", ""))
-            if g is None or g.get("guild") != str(gid):
-                return redirect(f"/?key={key}")
-            fut = _aio.run_coroutine_threadsafe(
-                b.end_giveaway(g["id"], by="dashboard"), disc.loop)
-            try:
-                fut.result(timeout=20)
-            except Exception as e:
-                print("[dash] giveaway end failed:", e)
-        elif action == "reroll":
-            g = b.giveaway_data.get(request.form.get("id", ""))
-            if g is None or g.get("guild") != str(gid):
-                return redirect(f"/?key={key}")
-            fut = _aio.run_coroutine_threadsafe(
-                b.reroll_giveaway(g["id"]), disc.loop)
-            try:
-                fut.result(timeout=20)
-            except Exception as e:
-                print("[dash] giveaway reroll failed:", e)
+                    print("[dash] giveaway end failed:", e)
+            elif action == "reroll":
+                g = b.giveaway_data.get(request.form.get("id", ""))
+                if g is None or g.get("guild") != str(gid):
+                    return redirect(f"/?key={key}")
+                fut = _aio.run_coroutine_threadsafe(
+                    b.reroll_giveaway(g["id"]), disc.loop)
+                try:
+                    fut.result(timeout=20)
+                except Exception as e:
+                    print("[dash] giveaway reroll failed:", e)
+        except Exception as e:
+            print("[dash] api_giveaway failed:", e)
         return redirect(f"/?key={key}")
 
     @app.post("/api/whitelist")
