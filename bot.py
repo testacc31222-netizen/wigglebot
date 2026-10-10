@@ -2956,9 +2956,9 @@ async def cmd_setabusechannel(ctx: commands.Context, channel: discord.TextChanne
 
 
 @bot.command(name="vcjoin")
-@owner_or_admin()
+@trusted_only()
 async def cmd_vcjoin(ctx: commands.Context, channel: str = "") -> None:
-    """Bot joins a VC and sits in it. Usage: .vcjoin [#voice] (blank = your VC)"""
+    """Bot joins a VC and sits in it. Usage: .vcjoin [#voice] (staff/whitelist only)."""
     target = None
     if channel:
         try:
@@ -3061,9 +3061,9 @@ VOICES = {
 
 
 @bot.command(name="voice")
-@owner_or_admin()
+@trusted_only()
 async def cmd_voice(ctx: commands.Context, name: str = "") -> None:
-    """Pick the AI voice. Usage: .voice [aria|jenny|guy|davis|jane|sara|tony|nancy]"""
+    """Pick the AI voice. Usage: .voice [aria|jenny|guy|davis|jane|sara|tony|nancy] (staff/whitelist only)."""
     name = name.lower().strip()
     if not name:
         cur = get_config(ctx.guild.id).get("tts_voice", "aria")
@@ -3124,8 +3124,9 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
 
 
 @bot.command(name="speak")
+@trusted_only()
 async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
-    """Bot says it out loud in VC. Usage: .speak <text>"""
+    """Bot says it out loud in VC. Usage: .speak <text> (staff/whitelist only)."""
     if not text:
         await ctx.send(f"Usage: `{PREFIX}speak <text>` (join a VC with `.vcjoin` first)")
         return
@@ -3135,9 +3136,9 @@ async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
 
 
 @bot.command(name="voiceauto")
-@owner_or_admin()
+@trusted_only()
 async def cmd_voiceauto(ctx: commands.Context, state: str = "") -> None:
-    """Speak ping replies aloud when in VC. Usage: .voiceauto <on|off>"""
+    """Speak ping replies aloud when in VC. Usage: .voiceauto <on|off> (staff/whitelist only)."""
     state = state.lower().strip()
     if state in ("on", "off"):
         update_config(ctx.guild.id, voice_auto=(state == "on"))
@@ -3148,7 +3149,7 @@ async def cmd_voiceauto(ctx: commands.Context, state: str = "") -> None:
 
 
 @bot.command(name="vcleave")
-@owner_or_admin()
+@trusted_only()
 async def cmd_vcleave(ctx: commands.Context) -> None:
     vc = ctx.guild.voice_client if ctx.guild else None
     if not vc:
@@ -3163,9 +3164,9 @@ async def cmd_vcleave(ctx: commands.Context) -> None:
 
 
 @bot.command(name="setlobby")
-@owner_or_admin()
+@trusted_only()
 async def cmd_setlobby(ctx: commands.Context, channel: str = "") -> None:
-    """Join-to-create voice setup. Usage: .setlobby #voice | .setlobby off | .setlobby"""
+    """Join-to-create voice setup. Usage: .setlobby #voice | .setlobby off | .setlobby (staff/whitelist only)."""
     channel = channel.strip().lower()
     if not channel:
         cfg = get_config(ctx.guild.id)
@@ -3836,7 +3837,8 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "linkchannel", "vcjoin", "vcleave",
                                                      "voiceauto", "voice"):
             await ctx.send("❌ Bot owner or server admin only.")
-        elif ctx.command and ctx.command.name in ("say",):
+        elif ctx.command and ctx.command.name in ("say", "speak", "vcjoin", "vcleave",
+                                                      "voice", "voiceauto", "setlobby"):
             await ctx.send("❌ Staff/whitelisted role only — ask an admin for `.whitelist add @yourrole`.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
