@@ -2761,35 +2761,33 @@ abuse_cd: dict[int, float] = {}
 
 @bot.command(name="abuse")
 async def cmd_abuse(ctx: commands.Context, *, reason: str = "") -> None:
-    """Ping the abuse-alert role. Usage: .abuse [what's happening in game]"""
+    """Post an abuse alert (no pings). Usage: .abuse [what's happening in game]"""
     if ctx.guild is None:
         return
     cfg = get_config(ctx.guild.id)
-    role = ctx.guild.get_role(cfg.get("abuse_role_id") or 0)
-    if role is None:
-        await ctx.send(f"No abuse role set. An admin should run `{PREFIX}setabuserole @role` "
-                       f"or set it in the panel.")
-        return
     now = time.time()
     last = abuse_cd.get(ctx.guild.id, 0)
     if now - last < ABUSE_COOLDOWN_S:
         wait = int(ABUSE_COOLDOWN_S - (now - last))
-        await ctx.send(f"🚨 Already pinged — cooldown {wait}s left. Mods have been notified.")
+        await ctx.send(f"🚨 Already reported — cooldown {wait}s left. Mods have been notified.")
         return
     abuse_cd[ctx.guild.id] = now
     clean = sanitize_mentions(reason.strip()[:300])
     desc = f"Reported by {ctx.author.mention} in {ctx.channel.mention}"
     if clean:
         desc += f"\n> {clean}"
+    notify = ctx.guild.get_role(cfg.get("abuse_role_id") or 0)
+    if notify is not None:
+        desc += f"\nNotify: {sanitize_mentions(notify.name)}"
     em = E("🚨 ADMIN ABUSE — get in game NOW", desc, kind="raid")
     target = ctx.guild.get_channel(cfg.get("abuse_channel_id") or 0) or ctx.channel
     try:
-        await target.send(content=role.mention, embed=em)
+        await target.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
-        await ctx.send(f"{role.mention} 🚨 admin abuse reported by {ctx.author.mention}!")
+        await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
         return
     if target.id != ctx.channel.id:
-        await ctx.send(f"🚨 {role.name} pinged — help is on the way.")
+        await ctx.send("🚨 Report sent — help is on the way.")
 
 
 @bot.command(name="setabuserole")
