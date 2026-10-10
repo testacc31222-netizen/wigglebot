@@ -1863,6 +1863,8 @@ automod_deleted: set[int] = set()
 spam_track: dict[int, dict[int, deque]] = defaultdict(lambda: defaultdict(deque))
 AUTOMOD_STRIKE_WINDOW_S = 600
 SPAM_COUNT, SPAM_WINDOW_S = 4, 30
+ping_track: dict[int, dict[int, deque]] = defaultdict(lambda: defaultdict(deque))
+PING_COUNT, PING_WINDOW_S = 15, 60  # >15 pings in 60s = ping spam
 AUTOMOD_STRIKES_TO_MUTE = 3
 
 INVITE_RE = None
@@ -1891,8 +1893,23 @@ async def automod_check(message: discord.Message) -> bool:
         reason = "discord invites aren't allowed here"
     elif cfg.get("automod_links") and not link_free and link_re.search(content):
         reason = "links aren't allowed here"
+    elif getattr(message, "mention_everyone", False):
+        reason = "@everyone/@here pings aren't allowed here"
+    elif len(message.role_mentions) >= 3:
+        reason = "too many role pings at once"
     elif len(message.mentions) + len(message.role_mentions) > int(cfg.get("automod_max_mentions", 5)):
         reason = f"too many mentions (max {cfg.get('automod_max_mentions', 5)})"
+    if not reason:
+        # ping velocity: lots of pings spread across messages in a short window
+        now = time.time()
+        pq = ping_track[message.guild.id][message.author.id]
+        pq.append((now, len(message.mentions) + len(message.role_mentions)
+                   + (5 if getattr(message, "mention_everyone", False) else 0)))
+        while pq and now - pq[0][0] > PING_WINDOW_S:
+            pq.popleft()
+        if sum(n for _, n in pq) > PING_COUNT:
+            ping_track[message.guild.id][message.author.id] = deque()
+            reason = f"slow down with the pings ({PING_COUNT}+ in {PING_WINDOW_S}s)"
     if not reason and cfg.get("automod_words"):
         low = content.lower()
         hit = next((w for w in cfg["automod_words"] if w and w.lower() in low), None)
@@ -3597,11 +3614,19 @@ async def on_message_delete(message: discord.Message) -> None:
         return  # already handled by automod — no double log
     text = (message.content or "").strip()[:1000]
     atts = f" 📎 {len(message.attachments)} attachment(s)" if message.attachments else ""
+    ghost = ""
+    try:
+        if (getattr(message, "mention_everyone", False) or message.mentions or message.role_mentions) \
+                and isinstance(message.author, discord.Member) \
+                and not is_whitelisted(message.author, get_config(message.guild.id)):
+            ghost = "\n👻 Suspected ghost ping (pinged then deleted)."
+    except Exception:
+        pass
     embed = E("🗑️ Message deleted", kind="info")
     embed.add_field(name="Author", value=f"{message.author.mention} (`{message.author.id}`)",
                     inline=True)
     embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-    embed.add_field(name="Content", value=f"```{text or '(no text)'}```{atts}", inline=False)
+    embed.add_field(name="Content", value=f"```{text or '(no text)'}```{atts}{ghost}", inline=False)
     await send_log(message.guild, "", embed=embed)
 
 
