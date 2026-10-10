@@ -128,6 +128,23 @@ def guild_cfg(gid):
     return bm.get_config(gid)
 
 
+def _san(text: str) -> str:
+    """Local mass-ping stripper (mirrors bot.sanitize_mentions, no import cycle)."""
+    import re as _re
+    if not text:
+        return text
+    text = _re.sub(r"<@everyone>", "everyone", text, flags=_re.I)
+    text = _re.sub(r"<@here>", "here", text, flags=_re.I)
+    text = _re.sub(r"@\s*everyone", "everyone", text, flags=_re.I)
+    text = _re.sub(r"@\s*here", "here", text, flags=_re.I)
+    text = _re.sub(r"<@&\d+>", lambda m: "(role)", text)
+    return text
+
+
+def _no_ping():
+    return discord.AllowedMentions.none()
+
+
 def audit(action: str, gid, **kw) -> None:
     """Tamper-evident trail for sensitive admin actions (uses existing track())."""
     try:
@@ -282,7 +299,8 @@ async def _send_reminder(r) -> None:
         ch = guild.get_channel(r.get("channel_id") or 0)
         if ch is not None:
             try:
-                await ch.send(f"⏰ <@{r['user_id']}> {r.get('text', '')[:1500]}")
+                await ch.send(f"⏰ <@{r['user_id']}> {_san(r.get('text', '')[:1500])}",
+                              allowed_mentions=discord.AllowedMentions(users=True))
                 ok = True
             except (discord.Forbidden, discord.HTTPException) as exc:
                 detail = str(exc)[:200]
@@ -311,7 +329,8 @@ async def _send_event_notice(ev, mins: int) -> None:
     mentions = " ".join(f"<@{u}>" for u in going[:20])
     when = "starting NOW" if mins == 0 else f"starting in {mins}m"
     try:
-        await ch.send(f"📅 **{ev.get('title', 'Event')[:200]}** {when}! {mentions}".strip()[:2000])
+        await ch.send(f"📅 **{_san(ev.get('title', 'Event')[:200])}** {when}! {mentions}".strip()[:2000],
+                      allowed_mentions=discord.AllowedMentions(users=True))
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -334,14 +353,14 @@ def validate_cmd_name(name: str):
 
 
 def build_response(cmd: dict, member: discord.Member, guild: discord.Guild, channel):
-    text = render_vars(cmd.get("response", ""), member, guild, channel)
+    text = _san(render_vars(cmd.get("response", ""), member, guild, channel))
     if not cmd.get("embed"):
         return text[:2000] or "(empty response)", None
     try:
         color = int(str(cmd.get("color", "5865F2")).strip().lstrip("#"), 16)
     except ValueError:
         color = 0x5865F2
-    em = discord.Embed(title=render_vars(cmd.get("title", "") or "", member, guild, channel)[:256],
+    em = discord.Embed(title=_san(render_vars(cmd.get("title", "") or "", member, guild, channel))[:256],
                        description=text[:4000],
                        color=color)
     return None, em
@@ -372,9 +391,9 @@ async def try_custom(message: discord.Message, content: str) -> bool:
     text, em = build_response(cmd, message.author, message.guild, message.channel)
     try:
         if em is not None:
-            await message.channel.send(embed=em)
+            await message.channel.send(embed=em, allowed_mentions=_no_ping())
         else:
-            await message.channel.send(text)
+            await message.channel.send(text, allowed_mentions=_no_ping())
     except (discord.Forbidden, discord.HTTPException):
         return True
     try:
@@ -438,14 +457,14 @@ def open_suggestion(guild_id, author_id, author_name, text: str):
 def sug_embed(guild, sub: dict):
     score = len(sub.get("up", [])) - len(sub.get("down", []))
     em = discord.Embed(title=f"💡 Suggestion ({sub['id']})",
-                       description=sub.get("text", "")[:1000],
+                       description=_san(sub.get("text", "")[:1000]),
                        color=discord.Color.blurple())
     em.add_field(name="Status", value=sub.get("status", "pending").title(), inline=True)
     em.add_field(name="Score", value=f"{score:+d} (👍 {len(sub.get('up', []))} / 👎 {len(sub.get('down', []))})",
                  inline=True)
     em.add_field(name="By", value=f"<@{sub.get('author_id')}>", inline=True)
     if sub.get("response"):
-        em.add_field(name="Staff response", value=sub["response"][:1000], inline=False)
+        em.add_field(name="Staff response", value=_san(sub["response"][:1000]), inline=False)
     em.set_footer(text="Wigglesworth suggestions · one vote per person")
     return em
 
@@ -555,9 +574,9 @@ def poll_embed(p: dict):
         except (ValueError, IndexError):
             pass
     total = sum(counts) or 1
-    lines = [f"`{i + 1}.` {opt} — **{c}** ({c * 100 // total}%)"
+    lines = [f"`{i + 1}.` {_san(opt)} — **{c}** ({c * 100 // total}%)"
              for i, (opt, c) in enumerate(zip(p["options"], counts))]
-    em = discord.Embed(title=f"📊 {p['question'][:250]}",
+    em = discord.Embed(title=f"📊 {_san(p['question'][:250])}",
                        description="\n".join(lines)[:4000],
                        color=discord.Color.blurple())
     em.set_footer(text=f"Wigglesworth poll · {sum(counts)} votes · tap to change your vote")
@@ -671,6 +690,7 @@ async def _cmd_poll(ctx, args: str) -> None:
     if len(opts) < 2:
         await ctx.send("Give at least 2 options.")
         return
+    q, opts = _san(q), [_san(o) for o in opts]
     p = {"question": q, "options": opts, "votes": {}, "status": "open",
          "guild": str(ctx.guild.id), "channel": ctx.channel.id, "message": 0,
          "author": str(ctx.author.id), "created": time.time()}
@@ -751,7 +771,7 @@ async def _cmd_remind(ctx, args: str) -> None:
         await ctx.send("Reminder text can't be empty.")
         return
     r = {"id": new_id("R"), "guild": str(ctx.guild.id), "user_id": str(ctx.author.id),
-         "channel_id": ctx.channel.id, "text": rest.strip()[:1500],
+         "channel_id": ctx.channel.id, "text": _san(rest.strip()[:1500]),
          "next_run": time.time() + dur_s, "interval_s": interval,
          "status": "active", "created": time.time(), "last_error": ""}
     store("reminders.json", []).append(r)
@@ -780,7 +800,7 @@ async def _cmd_suggest(ctx, text: str) -> None:
         return
     cfg = guild_cfg(ctx.guild.id)
     ch = ctx.guild.get_channel(cfg.get("suggest_channel_id") or 0)
-    sub = open_suggestion(ctx.guild.id, ctx.author.id, ctx.author.display_name, text[:1000])
+    sub = open_suggestion(ctx.guild.id, ctx.author.id, ctx.author.display_name, _san(text[:1000]))
     target = ch or ctx.channel
     try:
         msg = await target.send(embed=sug_embed(ctx.guild, sub), view=SuggestView())

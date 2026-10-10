@@ -820,7 +820,9 @@ async def on_message(message: discord.Message) -> None:
                 try:
                     await message.reply(
                         f"💤 **{user.display_name}** is AFK ({afk_since_ago(entry['since'])}): "
-                        f"{entry['reason']}", mention_author=False)
+                        f"{sanitize_mentions(str(entry.get('reason', 'AFK')))}",
+                        mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none())
                 except (discord.Forbidden, discord.HTTPException):
                     pass
                 break  # one notice per message
@@ -1259,10 +1261,58 @@ def looks_like_question(text: str) -> bool:
 def sanitize_mentions(text: str) -> str:
     """Never let the bot fire mass pings, no matter what users ask."""
     import re as _re
+    if not text:
+        return text
+    text = _re.sub(r"<@everyone>", "everyone", text, flags=_re.I)
+    text = _re.sub(r"<@here>", "here", text, flags=_re.I)
     text = _re.sub(r"@\s*everyone", "everyone", text, flags=_re.I)
     text = _re.sub(r"@\s*here", "here", text, flags=_re.I)
     text = _re.sub(r"<@&(\d+)>", r"(role \1)", text)  # role pings -> plain text
     return text
+
+
+def contains_mass_ping(text: str) -> bool:
+    """True if raw user text tries to ping everyone/here/roles."""
+    import re as _re
+    if not text:
+        return False
+    if _re.search(r"@\s*everyone", text, flags=_re.I):
+        return True
+    if _re.search(r"@\s*here", text, flags=_re.I):
+        return True
+    if _re.search(r"<@&\d+>", text):
+        return True
+    return False
+
+
+def is_trusted(member: discord.Member, cfg: dict) -> bool:
+    """Whitelisted users/roles + admins + owners. Used to gate broadcast cmds."""
+    try:
+        if member.id in OWNER_IDS:
+            return True
+    except NameError:
+        pass
+    try:
+        return bool(is_whitelisted(member, cfg))
+    except Exception:
+        return False
+
+
+def trusted_only():
+    """Allow bot owners, server admins, or whitelisted users/roles."""
+    async def predicate(ctx: commands.Context) -> bool:
+        if ctx.guild is None:
+            return False
+        try:
+            if ctx.author.id in OWNER_IDS:
+                return True
+        except NameError:
+            pass
+        try:
+            return bool(is_whitelisted(ctx.author, get_config(ctx.guild.id)))
+        except Exception:
+            return False
+    return commands.check(predicate)
 
 
 async def chat_reply(message: discord.Message) -> None:
@@ -1619,19 +1669,21 @@ async def cmd_story(ctx: commands.Context, *, line: str = "") -> None:
     key = str(ctx.channel.id)
     story = story_data.setdefault(key, [])
     if not line:
-        await ctx.send("📖 So far:\n" + ("\n".join(f"> {l}" for l in story[-10:]) or "_Empty — start it!_"))
+        await ctx.send("📖 So far:\n" + sanitize_mentions("\n".join(f"> {l}" for l in story[-10:]) or "_Empty — start it!_"),
+                       allowed_mentions=discord.AllowedMentions.none())
         return
-    story.append(f"{ctx.author.display_name}: {line[:200]}")
+    story.append(f"{ctx.author.display_name}: {sanitize_mentions(line[:200])}")
     cont = None
     if AI_API_KEY:
         cont = await ai_reply(ctx.channel.id, "Storyteller",
                               "Continue this one-line story briefly: " + " / ".join(story[-5:]))
     if not cont:
         cont = random.choice(STORY_NUDGES)
+    cont = sanitize_mentions(cont)
     story.append(f"{bot.user.display_name if bot.user else 'Bot'}: {cont}")
     del story[:-20]
     _save_json(STORY_FILE, story_data)
-    await ctx.send(f"📖 {cont}")
+    await ctx.send(f"📖 {cont}", allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="compliment")
@@ -1645,12 +1697,28 @@ async def cmd_confess(ctx: commands.Context, *, text: str = "") -> None:
     """Anonymous confession. Usage: .confess <text>"""
     if not text:
         return
+    cfg = get_config(ctx.guild.id) if ctx.guild else {}
+    # Anonymous mass pings are never allowed — not even for staff (use .say).
+    if contains_mass_ping(text) and not is_trusted(ctx.author, cfg):
+        try:
+            await ctx.message.delete()
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        try:
+            await ctx.send(f"{ctx.author.mention} confessions can't ping everyone/here/roles.",
+                           delete_after=8)
+            await send_log(ctx.guild, f"🚫 {ctx.author} (`{ctx.author.id}`) tried mass ping via .confess.",
+                           event="automod")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        return
     try:
         await ctx.message.delete()
     except (discord.Forbidden, discord.HTTPException):
         pass
     try:
-        await ctx.send(f"📮 **Anonymous confession:** {text[:1500]}")
+        await ctx.send(f"📮 **Anonymous confession:** {sanitize_mentions(text[:1500])}",
+                       allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -1675,7 +1743,8 @@ async def cmd_catchup(ctx: commands.Context) -> None:
         except Exception:
             summary = None
         if summary:
-            await ctx.send(f"📰 **Catchup:** {summary}")
+            await ctx.send(f"📰 **Catchup:** {sanitize_mentions(summary)}",
+                           allowed_mentions=discord.AllowedMentions.none())
             return
     from collections import Counter
     talkers = Counter(m.author.display_name for m in msgs).most_common(5)
@@ -1700,7 +1769,8 @@ async def cmd_tr(ctx: commands.Context, lang: str = "", *, text: str = "") -> No
                 out = (data.get("responseData") or {}).get("translatedText", "").strip()
                 if not out:
                     raise ValueError
-                await ctx.send(f"🌍 `{lang}`: {out[:1500]}")
+                await ctx.send(f"🌍 `{lang}`: {sanitize_mentions(out[:1500])}",
+                               allowed_mentions=discord.AllowedMentions.none())
     except Exception:
         await ctx.send("❌ Translate hiccup — try again later.")
 
@@ -1983,10 +2053,12 @@ async def cmd_afk(ctx: commands.Context, *, reason: str = "AFK") -> None:
     """Go AFK with a reason. Usage: .afk [reason] — auto-clears on your next message."""
     if ctx.guild is None:
         return
+    clean_reason = sanitize_mentions(reason[:200])
     afk_data.setdefault(str(ctx.guild.id), {})[str(ctx.author.id)] = {
-        "reason": reason[:200], "since": time.time()}
+        "reason": clean_reason, "since": time.time()}
     _save_afk(afk_data)
-    await ctx.send(f"💤 {ctx.author.mention} is now AFK: **{reason[:200]}**")
+    await ctx.send(f"💤 {ctx.author.mention} is now AFK: **{clean_reason}**",
+                   allowed_mentions=discord.AllowedMentions(users=True))
 
 
 @bot.command(name="xpreset")
@@ -3129,12 +3201,25 @@ async def cmd_whitelist(ctx: commands.Context, action: str = "", target: str = "
             f"Users: {cfg['whitelisted_user_ids'] or '—'}\nRoles: {cfg['whitelisted_role_ids'] or '—'}"
         )
         return
-    # accept mention or raw ID, for user or role
+    # accept user or role mention/ID: <@123>, <@&123>, raw ID
     raw = target.strip("<>@#!&")
     try:
         tid = int(raw)
     except ValueError:
-        await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@user or ID>` / `{PREFIX}whitelist list`")
+        await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@user|@role|ID>` / `{PREFIX}whitelist list`")
+        return
+    role = ctx.guild.get_role(tid) if ctx.guild else None
+    if role is not None:
+        roles = list(cfg.get("whitelisted_role_ids", []))
+        if action == "add" and tid not in roles:
+            roles.append(tid)
+        elif action == "remove" and tid in roles:
+            roles.remove(tid)
+        else:
+            await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@role>`")
+            return
+        update_config(ctx.guild.id, whitelisted_role_ids=roles)
+        await ctx.send(f"✅ Whitelist role {'added' if action == 'add' else 'removed'} **{role.name}**.")
         return
     users = list(cfg["whitelisted_user_ids"])
     if action == "add" and tid not in users:
@@ -3142,7 +3227,7 @@ async def cmd_whitelist(ctx: commands.Context, action: str = "", target: str = "
     elif action == "remove" and tid in users:
         users.remove(tid)
     else:
-        await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@user or ID>`")
+        await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@user|@role|ID>`")
         return
     update_config(ctx.guild.id, whitelisted_user_ids=users)
     await ctx.send(f"✅ Whitelist {'added' if action == 'add' else 'removed'} `{tid}`.")
@@ -3562,9 +3647,9 @@ async def on_message_delete(message: discord.Message) -> None:
 
 
 @bot.command(name="say")
-@admin_only()
+@trusted_only()
 async def cmd_say(ctx: commands.Context, channel: discord.TextChannel | None = None, *, text: str = "") -> None:
-    """Speak through the bot. Usage: .say [#channel] <message>"""
+    """Speak through the bot. Usage: .say [#channel] <message> (staff/whitelist only)."""
     if not text:
         await ctx.send(f"Usage: `{PREFIX}say [#channel] <message>`")
         return
@@ -3599,7 +3684,7 @@ async def cmd_explode(ctx: commands.Context, *, target: str = "") -> None:
     gname = ctx.guild.name if ctx.guild else "this server"
     members = ctx.guild.member_count if ctx.guild else 69
     channels = len(ctx.guild.channels) if ctx.guild else 12
-    victim = target.strip() or "everyone"
+    victim = sanitize_mentions(target.strip() or "everyone")
     SCALE = 9.0  # ~5 minutes of dread
     steps = [
         ("💣 Nuke request received. Verifying permissions...", 2.0),
@@ -3751,6 +3836,8 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "linkchannel", "vcjoin", "vcleave",
                                                      "voiceauto", "voice"):
             await ctx.send("❌ Bot owner or server admin only.")
+        elif ctx.command and ctx.command.name in ("say",):
+            await ctx.send("❌ Staff/whitelisted role only — ask an admin for `.whitelist add @yourrole`.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
     else:
