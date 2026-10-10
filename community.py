@@ -15,6 +15,7 @@ from collections import defaultdict
 
 import discord
 from discord.ext import tasks
+from datetime import datetime, timezone
 
 bm = None  # bot module ref, set by setup()
 _bot = None  # commands.Bot instance, set by setup()
@@ -238,6 +239,7 @@ async def _send_announcement(gid, ann) -> None:
             em = discord.Embed(title=(ann.get("title") or "")[:256],
                                description=(ann.get("body") or "")[:4000],
                                color=int(ann.get("color", "0x5865F2"), 16))
+            em.set_footer(text="Wigglesworth announcement")
             await ch.send(embed=em)
         else:
             await ch.send((ann.get("body") or "")[:2000] or "(empty)")
@@ -363,6 +365,7 @@ def build_response(cmd: dict, member: discord.Member, guild: discord.Guild, chan
     em = discord.Embed(title=_san(render_vars(cmd.get("title", "") or "", member, guild, channel))[:256],
                        description=text[:4000],
                        color=color)
+    em.set_footer(text="Wigglesworth")
     return None, em
 
 
@@ -458,7 +461,8 @@ def sug_embed(guild, sub: dict):
     score = len(sub.get("up", [])) - len(sub.get("down", []))
     em = discord.Embed(title=f"💡 Suggestion ({sub['id']})",
                        description=_san(sub.get("text", "")[:1000]),
-                       color=discord.Color.blurple())
+                       color=discord.Color.blurple(),
+                       timestamp=datetime.now(timezone.utc))
     em.add_field(name="Status", value=sub.get("status", "pending").title(), inline=True)
     em.add_field(name="Score", value=f"{score:+d} (👍 {len(sub.get('up', []))} / 👎 {len(sub.get('down', []))})",
                  inline=True)
@@ -578,7 +582,8 @@ def poll_embed(p: dict):
              for i, (opt, c) in enumerate(zip(p["options"], counts))]
     em = discord.Embed(title=f"📊 {_san(p['question'][:250])}",
                        description="\n".join(lines)[:4000],
-                       color=discord.Color.blurple())
+                       color=discord.Color.blurple(),
+                       timestamp=datetime.now(timezone.utc))
     em.set_footer(text=f"Wigglesworth poll · {sum(counts)} votes · tap to change your vote")
     return em
 
@@ -674,6 +679,7 @@ async def _cmd_serverinfo(ctx) -> None:
     em.add_field(name="Roles", value=str(len(g.roles)), inline=True)
     if g.icon:
         em.set_thumbnail(url=g.icon.url)
+    em.set_footer(text="Wigglesworth")
     await ctx.send(embed=em)
 
 
@@ -965,7 +971,8 @@ def case_embed(guild, c: dict):
     m = guild.get_member(int(c.get("target_id", 0))) if str(c.get("target_id", "")).isdigit() else None
     em = discord.Embed(title=f"📁 {c['id']} — {c.get('action', '?').title()}",
                        description=(c.get("reason") or "—")[:1000],
-                       color=discord.Color.orange())
+                       color=discord.Color.orange(),
+                       timestamp=datetime.now(timezone.utc))
     em.add_field(name="User", value=m.mention if m else f"`{c.get('target_id')}`", inline=True)
     em.add_field(name="Moderator", value=f"<@{c.get('mod_id')}>", inline=True)
     em.add_field(name="Status", value=c.get("status", "open").title(), inline=True)
@@ -1090,7 +1097,8 @@ def app_embed(guild, form: dict, sub: dict):
              for i, f in enumerate(form.get("fields", []))]
     em = discord.Embed(title=f"📝 {form.get('name', 'Application')} — {sub['id']}",
                        description="\n".join(lines)[:4000] or "(no answers)",
-                       color=discord.Color.blurple())
+                       color=discord.Color.blurple(),
+                       timestamp=datetime.now(timezone.utc))
     em.add_field(name="Applicant", value=f"<@{sub.get('user_id')}>", inline=True)
     em.add_field(name="Status", value=sub.get("status", "pending").title(), inline=True)
     if sub.get("reviewer_note"):
@@ -1239,7 +1247,8 @@ def ev_embed(ev: dict):
     wait = sum(1 for v in (ev.get("rsvps", {}) or {}).values() if v == "waitlist")
     em = discord.Embed(title=f"📅 {ev.get('title', 'Event')[:250]}",
                        description=(ev.get("desc", "") or "")[:2000] or "(no description)",
-                       color=discord.Color.blurple())
+                       color=discord.Color.blurple(),
+                       timestamp=datetime.now(timezone.utc))
     em.add_field(name="Starts", value=f"<t:{int(ev.get('starts_at', 0))}:F> (<t:{int(ev.get('starts_at', 0))}:R>)",
                  inline=False)
     em.add_field(name="Going", value=f"{going}{cap}", inline=True)

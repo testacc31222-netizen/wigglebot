@@ -1655,6 +1655,7 @@ async def cmd_trivia(ctx: commands.Context) -> None:
                           color=discord.Color.gold())
     for i, opt in enumerate(opts):
         embed.add_field(name="ABCD"[i], value=opt, inline=True)
+    embed.set_footer(text="Fastest finger wins · +50 XP")
     try:
         await ctx.send(embed=embed, view=view)
     except (discord.Forbidden, discord.HTTPException):
@@ -1715,8 +1716,11 @@ async def cmd_confess(ctx: commands.Context, *, text: str = "") -> None:
     except (discord.Forbidden, discord.HTTPException):
         pass
     try:
-        await ctx.send(f"📮 **Anonymous confession:** {sanitize_mentions(text[:1500])}",
-                       allowed_mentions=discord.AllowedMentions.none())
+        em = discord.Embed(title="📮 Anonymous confession",
+                           description=sanitize_mentions(text[:1500]),
+                           color=discord.Color.blurple())
+        em.set_footer(text="Wigglesworth · anonymous")
+        await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -1741,16 +1745,21 @@ async def cmd_catchup(ctx: commands.Context) -> None:
         except Exception:
             summary = None
         if summary:
-            await ctx.send(f"📰 **Catchup:** {sanitize_mentions(summary)}",
-                           allowed_mentions=discord.AllowedMentions.none())
+            em = discord.Embed(title="📰 Catchup", description=sanitize_mentions(summary),
+                               color=discord.Color.blurple())
+            em.set_footer(text="Wigglesworth")
+            await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
             return
     from collections import Counter
     talkers = Counter(m.author.display_name for m in msgs).most_common(5)
     words = Counter(w.lower() for m in msgs for w in m.content.split()
                     if len(w) > 4 and w.isalpha()).most_common(5)
-    await ctx.send("📰 **Catchup (last 50):**\nTalkers: " +
-                   ", ".join(f"{n} ({c})" for n, c in talkers) +
-                   ("\nHot words: " + ", ".join(w for w, _ in words) if words else ""))
+    em = discord.Embed(title="📰 Catchup (last 50)", color=discord.Color.blurple())
+    em.add_field(name="Talkers", value=", ".join(f"{n} ({c})" for n, c in talkers) or "—", inline=False)
+    if words:
+        em.add_field(name="Hot words", value=", ".join(w for w, _ in words), inline=False)
+    em.set_footer(text="Wigglesworth")
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="tr")
@@ -2003,6 +2012,7 @@ async def cmd_status(ctx: commands.Context) -> None:
     embed.add_field(name="Action", value=cfg["raid_action"], inline=True)
     embed.add_field(name="New-account flag", value=f"< {cfg['new_account_age_days']} days", inline=True)
     embed.add_field(name="Auto-unlock", value=f"{cfg['lockdown_duration_minutes']} min (0 = manual)", inline=True)
+    embed.set_footer(text="Wigglesworth guard")
     await ctx.send(embed=embed)
 
 
@@ -2025,7 +2035,10 @@ async def cmd_rank(ctx: commands.Context, member: discord.Member | None = None) 
     embed = discord.Embed(title=f"🏆 {target.display_name} — level {level}", color=discord.Color.gold())
     embed.add_field(name="XP", value=f"{xp} / {nxt}", inline=True)
     embed.add_field(name="Rank", value=f"#{rank}", inline=True)
-    embed.add_field(name="Progress", value=f"`{bar}`", inline=False)
+    embed.add_field(name="Progress", value=f"`{bar}` {xp - xp_for_level(level)}/{nxt - xp_for_level(level)} to Lvl {level + 1}", inline=False)
+    if target.display_avatar:
+        embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text="Wigglesworth XP")
     await ctx.send(embed=embed)
 
 
@@ -2597,6 +2610,7 @@ async def cmd_rolemenu(ctx: commands.Context, *args: str) -> None:
         return
     embed = discord.Embed(title="🎭 Pick your roles", description="Tap a button to add/remove it.",
                           color=discord.Color.blurple())
+    embed.set_footer(text="Wigglesworth · buttons stay live after restarts")
     view = RoleMenuView(ctx.guild.id, rids)
     for b in view.children:
         role = ctx.guild.get_role(b.role_id)
@@ -3539,6 +3553,9 @@ async def cmd_userinfo(ctx: commands.Context, member: discord.Member | None = No
     embed.add_field(name="Account age", value=f"{age_days} days{flag}", inline=True)
     embed.add_field(name="Joined server", value=joined, inline=True)
     embed.add_field(name="Roles", value=roles[:500], inline=False)
+    if m.display_avatar:
+        embed.set_thumbnail(url=m.display_avatar.url)
+    embed.set_footer(text="Wigglesworth")
     await ctx.send(embed=embed)
 
 
