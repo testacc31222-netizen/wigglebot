@@ -1970,7 +1970,7 @@ async def cmd_lockdown(ctx: commands.Context, *, reason: str = "manual lockdown"
     raid_active[ctx.guild.id] = True
     n = await lockdown_guild(ctx.guild, reason=f"manual by {ctx.author}: {reason}")
     await ctx.send(f"🔒 Locked **{n}** channel(s). Reason: {reason}")
-    await send_log(ctx.guild, f"🔒 Manual lockdown by {ctx.author.mention}: {reason}", event="lockdown")
+    await send_log(ctx.guild, f"🔒 Manual lockdown by {ctx.author.mention}: {sanitize_mentions(reason)}", event="lockdown")
 
 
 @bot.command(name="unlock")
@@ -3517,7 +3517,7 @@ async def cmd_mute(ctx: commands.Context, member: discord.Member, minutes: int =
     try:
         await member.timeout(timedelta(minutes=minutes), reason=f"{ctx.author}: {reason}")
         await ctx.send(f"🔇 {member.display_name} muted {minutes}m.")
-        await send_log(ctx.guild, f"🔇 {ctx.author} muted {member} (`{member.id}`) {minutes}m: {reason}", event="mute")
+        await send_log(ctx.guild, f"🔇 {ctx.author} muted {member} (`{member.id}`) {minutes}m: {sanitize_mentions(reason)}", event="mute")
         try:
             community.open_case(ctx.guild.id, member.id, member.display_name,
                                 ctx.author.id, str(ctx.author), "mute",
