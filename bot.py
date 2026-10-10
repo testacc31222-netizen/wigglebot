@@ -286,7 +286,7 @@ intents.messages = True
 intents.message_content = True  # PRIVILEGED — needed for ! prefix commands
 intents.voice_states = True     # VC join/moderation
 
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
 # runtime state
 join_times: dict[int, deque] = defaultdict(deque)   # guild_id -> deque[datetime]
@@ -3316,6 +3316,68 @@ async def cmd_giveaway_info(ctx: commands.Context, gid: str = "") -> None:
         f"Winners: " + (", ".join(f"<@{u}>" for u in g.get("winners", [])) or "—"), kind="info"))
 
 
+@bot.command(name="help")
+async def cmd_help(ctx: commands.Context) -> None:
+    """Everyone's commands (locked staff commands hidden). Usage: .help"""
+    if ctx.guild is None:
+        await ctx.send("Use this inside the server.")
+        return
+    em = discord.Embed(title="📖 Commands", color=discord.Color.blurple())
+    em.add_field(name="💬 Chat & fun",
+                 value=("`.ask` talk to the AI · `.8ball` · `.trivia` · `.story`\n"
+                        "`.compliment [@user]` · `.confess` (anonymous) · `.catchup`\n"
+                        "`.tr <lang> <text>` · `.rps` · `.roll` · `.flip`"),
+                 inline=False)
+    em.add_field(name="🏆 XP",
+                 value="`.rank [@user]` · `.leaderboard` · `.afk [reason]`",
+                 inline=False)
+    em.add_field(name="🛡️ Server",
+                 value=("`.verify` · `.abuse <what's happening>` · `.suggest <idea>`\n"
+                        "`.poll \"Q\" \"A\" \"B\"` · `.remind <10s+> <text>` · `.events`\n"
+                        "`.cases [@user]` · `.apply` · `.serverinfo` · `.userinfo [@user]`\n"
+                        "`.giveaway list` · `.giveaway info <id>`"),
+                 inline=False)
+    em.set_footer(text="Staff: .help2 shows everything.")
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.command(name="help2")
+@trusted_only()
+async def cmd_help2(ctx: commands.Context) -> None:
+    """All commands (staff/whitelist only). Usage: .help2"""
+    if ctx.guild is None:
+        await ctx.send("Use this inside the server.")
+        return
+    em = discord.Embed(title="📖 All commands (staff)", color=discord.Color.gold())
+    em.add_field(name="💬 Chat & fun (open)",
+                 value=("`.ask` · `.8ball` · `.trivia` · `.story` · `.compliment`\n"
+                        "`.confess` · `.catchup` · `.tr` · `.rps` · `.roll` · `.flip`"),
+                 inline=False)
+    em.add_field(name="🏆 XP / server (open)",
+                 value=("`.rank` · `.leaderboard` · `.afk` · `.verify` · `.abuse`\n"
+                        "`.suggest` · `.poll` · `.remind` · `.events` · `.cases`\n"
+                        "`.apply` · `.serverinfo` · `.userinfo` · `.giveaway list/info`"),
+                 inline=False)
+    em.add_field(name="📢 Broadcast (whitelist+)",
+                 value="`.say` · `.speak` · `.vcjoin` · `.vcleave` · `.voice` · `.voiceauto` · `.setlobby`",
+                 inline=False)
+    em.add_field(name="🛡️ Mod (admin+)",
+                 value=("`.purge` · `.mute` · `.unmute` · `.slowmode` · `.lockdown` · `.unlock`\n"
+                        "`.raidmode` · `.raidconfig` · `.whitelist` · `.temprole` · `.poll end`"),
+                 inline=False)
+    em.add_field(name="⚙️ Setup (owner/admin)",
+                 value=("`.teach` · `.unteach` · `.mood` · `.chaton` · `.chatoff` · `.setqotd`\n"
+                        "`.rolemenu` · `.setwelcome` · `.setgoodbye` · `.linkchannel`\n"
+                        "`.setlog` · `.setchat` · `.setabuserole` · `.setabusechannel`\n"
+                        "`.verifysetup` · `.verifyoff` · `.verifyfix` · `.diag`\n"
+                        "`.giveaway create|end|reroll` · `.xpreset` · `.xpadd` · `.xpset` · `.leveladd` · `.levelset`"),
+                 inline=False)
+    em.add_field(name="👑 Owner only",
+                 value="`.status` · `.setbio` · `.shutdown` · `.disable` · `.enable` · `.giverole`",
+                 inline=False)
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
+
+
 @bot.command(name="helpme")
 async def cmd_helpme(ctx: commands.Context) -> None:
     """Show the help card. Usage: .helpme"""
@@ -3680,6 +3742,7 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_voiceauto.error
 @cmd_whitelist.error
 @cmd_say.error
+@cmd_help2.error
 @cmd_explode.error
 @cmd_purge.error
 @cmd_mute.error
@@ -3717,7 +3780,7 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "voiceauto", "voice"):
             await ctx.send("❌ Bot owner or server admin only.")
         elif ctx.command and ctx.command.name in ("say", "speak", "vcjoin", "vcleave",
-                                                      "voice", "voiceauto", "setlobby"):
+                                                      "voice", "voiceauto", "setlobby", "help2"):
             await ctx.send("❌ Staff/whitelisted role only — ask an admin for `.whitelist add @yourrole`.")
         else:
             await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
