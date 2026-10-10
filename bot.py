@@ -616,8 +616,6 @@ async def on_ready() -> None:
     security.setup(_sys.modules[__name__])  # idempotent; registers security listeners
     community.setup(_sys.modules[__name__])  # idempotent; commands, views, scheduler
     bot.add_view(VerifyView())  # keep the ✅ button alive across restarts
-    bot.add_view(TicketOpenView())
-    bot.add_view(TicketCloseView())
     rr_register_saved()  # re-arm role menus (defined below, resolved at runtime)
     if not qotd_loop.is_running():
         qotd_loop.start()
@@ -2598,142 +2596,7 @@ async def cmd_rolemenu(ctx: commands.Context, *args: str) -> None:
     await ctx.send(f"✅ Menu live with {len(rids)} role(s). Survives restarts.")
 
 
-class TicketOpenView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🎫 Open a ticket", style=discord.ButtonStyle.blurple,
-                       custom_id="wiggle_ticketopen")
-    async def open_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-        try:
-            channel = await ticket_create(interaction.guild, interaction.user)
-        except Exception as exc:
-            print(f"[tickets] create failed: {type(exc).__name__}: {exc}")
-            try:
-                await interaction.followup.send(
-                    f"❌ Ticket failed: `{type(exc).__name__}: {exc}` (screenshot this to the dev)",
-                    ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-            return
-        try:
-            if channel:
-                await interaction.followup.send(f"Ticket: {channel.mention}", ephemeral=True)
-            else:
-                await interaction.followup.send(
-                    "❌ Couldn't make the ticket — I need **Manage Channels** (and a role above members). Tell an admin.",
-                    ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
-
-class TicketCloseView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🔒 Close ticket", style=discord.ButtonStyle.red,
-                       custom_id="wiggle_ticketclose")
-    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        channel = interaction.channel
-        topic = getattr(channel, "topic", "") or ""
-        is_owner = f"uid:{interaction.user.id}" in topic
-        is_staff = bool(interaction.user.guild_permissions.administrator
-                        or interaction.user.guild_permissions.manage_guild)
-        if not (is_owner or is_staff):
-            try:
-                await interaction.response.send_message("Not your ticket.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-            return
-        try:
-            await interaction.response.send_message("🔒 Closing in 5s...")
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-        await asyncio.sleep(5)
-        try:
-            await channel.delete(reason=f"Ticket closed by {interaction.user}")
-        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-            pass
-
-
-async def ticket_create(guild: discord.Guild, user) -> discord.TextChannel | None:
-    for ch in guild.text_channels:
-        if ch.name == f"ticket-{user.name.lower().replace(' ', '-')[:20]}":
-            return ch  # already open
-    category = discord.utils.get(guild.categories, name="Tickets")
-    if category is None:
-        try:
-            category = await guild.create_category("Tickets", reason="Ticket setup")
-        except (discord.Forbidden, discord.HTTPException):
-            category = None
-    overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                  user: discord.PermissionOverwrite(view_channel=True, send_messages=True,
-                                                    read_message_history=True)}
-    for role in guild.roles:
-        if role.permissions.administrator and not role.is_default():
-            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
-                                                           read_message_history=True)
-    try:
-        channel = await guild.create_text_channel(
-            f"ticket-{user.name.lower().replace(' ', '-')[:20]}",
-            category=category, overwrites=overwrites,
-            topic=f"uid:{user.id} | opened by {user}",
-            reason=f"Ticket for {user}")
-        await channel.send(f"👋 {user.mention} staff will be with you.\n"
-                           f"Describe your issue — 🔒 button or `.ticketclose` to close.",
-                           view=TicketCloseView())
-        return channel
-    except (discord.Forbidden, discord.HTTPException):
-        return None
-
-
-@bot.command(name="ticketsetup")
-@owner_or_admin()
-async def cmd_ticketsetup(ctx: commands.Context) -> None:
-    """Post the ticket panel here. Usage: .ticketsetup"""
-    try:
-        await ctx.send(embed=E("🎫 Need help?",
-                               "Click below to open a private ticket with staff.",
-                               kind="info"), view=TicketOpenView())
-    except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Can't post: {exc}")
-
-
-@bot.command(name="ticket")
-async def cmd_ticket(ctx: commands.Context) -> None:
-    """Open your ticket. Usage: .ticket"""
-    if ctx.guild is None:
-        return
-    channel = await ticket_create(ctx.guild, ctx.author)
-    if channel:
-        await ctx.send(f"Ticket: {channel.mention}")
-    else:
-        await ctx.send("❌ Can't create channels — tell an admin.")
-
-
-@bot.command(name="ticketclose")
-async def cmd_ticketclose(ctx: commands.Context) -> None:
-    """Close this ticket. Usage: .ticketclose (in a ticket channel)"""
-    topic = getattr(ctx.channel, "topic", "") or ""
-    if not ctx.channel.name.startswith("ticket-"):
-        await ctx.send("Not a ticket channel.")
-        return
-    is_owner = f"uid:{ctx.author.id}" in topic
-    is_staff = bool(ctx.author.guild_permissions.administrator
-                    or ctx.author.guild_permissions.manage_guild)
-    if not (is_owner or is_staff):
-        await ctx.send("Not your ticket.")
-        return
-    await ctx.send("🔒 Closing in 5s...")
-    await asyncio.sleep(5)
-    try:
-        await ctx.channel.delete(reason=f"Ticket closed by {ctx.author}")
-    except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-        pass
+# ---------- tickets removed ----------
 
 
 @bot.command(name="raidconfig")
@@ -3790,7 +3653,6 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_setwelcome.error
 @cmd_setgoodbye.error
 @cmd_rolemenu.error
-@cmd_ticketsetup.error
 @cmd_aitest.error
 @cmd_statusbot.error
 @cmd_setbio.error
@@ -3798,6 +3660,7 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_vcjoin.error
 @cmd_vcleave.error
 @cmd_voice.error
+@cmd_speak.error
 @cmd_voiceauto.error
 @cmd_whitelist.error
 @cmd_say.error
@@ -3833,7 +3696,7 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "verifysetup", "verifyoff", "aitest",
                                                      "rolemenu", "teach", "unteach", "mood",
                                                      "setqotd", "chaton", "chatoff", "explode",
-                                                     "ticketsetup", "setwelcome", "setgoodbye",
+                                                     "setwelcome", "setgoodbye",
                                                      "linkchannel", "vcjoin", "vcleave",
                                                      "voiceauto", "voice"):
             await ctx.send("❌ Bot owner or server admin only.")
