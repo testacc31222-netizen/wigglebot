@@ -2031,19 +2031,37 @@ async def cmd_rank(ctx: commands.Context, member: discord.Member | None = None) 
 
 @bot.command(name="leaderboard", aliases=["lb"])
 async def cmd_lb(ctx: commands.Context) -> None:
-    """Top 10 by XP."""
-    board = sorted(
+    """Top 10 by XP, with medals, progress bars, and your rank."""
+    full = sorted(
         xp_data.get(str(ctx.guild.id), {}).items(), key=lambda kv: int(kv[1]["xp"]), reverse=True
-    )[:10]
-    if not board:
+    )
+    if not full:
         await ctx.send("No XP yet — chat to earn some (5–15 XP/min).")
         return
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = []
-    for i, (uid, e) in enumerate(board, 1):
+    for i, (uid, e) in enumerate(full[:10], 1):
+        xp = int(e["xp"])
+        lvl = xp_level(xp)
+        base = xp_for_level(lvl)
+        nxt = xp_for_level(lvl + 1)
+        filled = int(8 * (xp - base) / max(nxt - base, 1))
+        bar = "█" * filled + "░" * (8 - filled)
         m = ctx.guild.get_member(int(uid))
-        name = m.display_name if m else f"<@{uid}>"
-        lines.append(f"**{i}.** {name} — Lvl {xp_level(int(e['xp']))} ({int(e['xp'])} XP)")
-    await ctx.send("🏆 **Leaderboard**\n" + "\n".join(lines))
+        name = sanitize_mentions(m.display_name) if m else f"Left user ({uid})"
+        marker = medals.get(i, f"`{i:>2}.`")
+        you = " ⬅️ you" if uid == str(ctx.author.id) else ""
+        lines.append(f"{marker} **{name}** — Lvl {lvl} · **{xp}** XP{you}\n`{bar}` {xp - base}/{nxt - base} to Lvl {lvl + 1}")
+    me_rank = next((i + 1 for i, (uid, _) in enumerate(full) if uid == str(ctx.author.id)), None)
+    me_xp = int(dict(full).get(str(ctx.author.id), {"xp": 0})["xp"])
+    total_xp = sum(int(e["xp"]) for _, e in full)
+    em = discord.Embed(title="🏆 Server Leaderboard", description="\n".join(lines)[:4000],
+                       color=discord.Color.gold())
+    if ctx.guild.icon:
+        em.set_thumbnail(url=ctx.guild.icon.url)
+    em.set_footer(text=f"You: #{me_rank} · Lvl {xp_level(me_xp)} ({me_xp} XP)"
+                       f"  •  {len(full)} earners  •  {total_xp} total XP")
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="afk")
