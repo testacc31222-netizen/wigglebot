@@ -3262,14 +3262,16 @@ async def cmd_giveaway(ctx: commands.Context) -> None:
 @owner_or_admin()
 async def cmd_giveaway_create(ctx: commands.Context, *, args: str = "") -> None:
     """Start a giveaway. Usage: .giveaway create Nitro | 24h | 1 [#channel]"""
+    import re as _re
     parts = [p.strip() for p in args.split("|")]
     usage = (f"Usage: `{PREFIX}giveaway create <prize> | <duration> | <winners> [#channel]`\n"
              f"Duration like `30m`, `2h`, `7d` (1m–30d). Winners 1–10.")
     if len(parts) < 3:
         await ctx.send(usage)
         return
+    m = _re.match(r"(\d+)", parts[2])
     try:
-        winners_n = max(1, min(10, int(parts[2])))
+        winners_n = max(1, min(10, int(m.group(1)) if m else parts[2]))
     except ValueError:
         winners_n = 0
     dur_s = parse_duration(parts[1])
@@ -3277,13 +3279,27 @@ async def cmd_giveaway_create(ctx: commands.Context, *, args: str = "") -> None:
         await ctx.send(usage)
         return
     target = ctx.channel
-    if len(parts) >= 4 and parts[3]:
-        try:
-            ch = ctx.guild.get_channel(int(parts[3].strip("<#>")))
-            if ch is not None:
-                target = ch
-        except ValueError:
-            pass
+    afterwards = " ".join(parts[3:]) + " " + parts[2]
+    chm = _re.search(r"<#(\d+)>", afterwards)
+    if chm:
+        ch = ctx.guild.get_channel(int(chm.group(1)))
+        if ch is not None:
+            target = ch
+    else:
+        raw = parts[3] if len(parts) >= 4 and parts[3] else ""
+        if raw:
+            try:
+                ch = ctx.guild.get_channel(int(raw.strip("<#>")))
+                if ch is not None:
+                    target = ch
+            except ValueError:
+                pass
+            if target is ctx.channel:
+                name = raw.lstrip("#").strip().lower()
+                hit = next((c for c in ctx.guild.text_channels
+                            if c.name.lower() == name), None)
+                if hit is not None:
+                    target = hit
     gid = await create_giveaway(ctx.guild, target, parts[0], dur_s, winners_n, ctx.author.id)
     await ctx.send(f"🎁 Giveaway started in {target.mention} — id `{gid}`.")
 
