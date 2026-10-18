@@ -169,25 +169,24 @@ def rank_embed(*, name: str, avatar: str | None, level: int, xp: int,
                guild_name: str, messages: int | None = None) -> discord.Embed:
     """The profile / rank card shown by `.rank`."""
     frac, into, needed = progress(xp, base, nxt)
-    e = embed(f"⚡ Level {level}", kind="xp",
+    e = embed(cut(name, 32), kind="xp",
               footer=f"{FOOTER} • Rank Card • {guild_name}")
+    e.set_author(name=f"«  LEVEL {level}  »")
     if avatar:
-        e.set_author(name=cut(name, 220), icon_url=avatar)
         e.set_thumbnail(url=avatar)
-    else:
-        e.set_author(name=cut(name, 220))
     e.description = (
-        f"{bar(frac, 12, 'xp')} **{pct_text(frac)}**\n"
-        f"`{fmt(into)} / {fmt(needed)} XP` — **{fmt(max(nxt - xp, 0))} XP** to Level {level + 1}"
+        f"{bar(frac, 10, 'xp')}  **{pct_text(frac)}**\n\n"
+        f"**{fmt(into)} / {fmt(needed)} XP**  ·  "
+        f"**{fmt(max(nxt - xp, 0))} XP** to **Level {level + 1}**"
     )
     e.add_field(name="🏆 Server Rank",
                 value=f"**#{rank}** of {fmt(tracked)}" if rank else "*Unranked*",
                 inline=True)
     e.add_field(name="✨ Total XP", value=f"**{fmt(xp)}**", inline=True)
-    if messages:
+    if messages is not None:
         e.add_field(name="💬 Messages", value=f"**{fmt(messages)}**", inline=True)
     else:
-        e.add_field(name="🎯 Next Level", value=f"Level {level + 1}", inline=True)
+        e.add_field(name="🎯 Next Level", value=f"**Level {level + 1}**", inline=True)
     return e
 
 
