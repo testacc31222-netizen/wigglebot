@@ -131,7 +131,7 @@ background:#1B2224;border:1px solid #283033}
 .range span{font-size:12px;color:#8b8b9e;padding:6px 14px;border-radius:16px}
 .range span.on{background:#26263a;color:#fff}
 .bignum{font-size:15px;color:#c9c9de}.bignum b{font-size:38px;color:#fff;letter-spacing:-1px}
-.bignum small{color:#22d3ee;font-size:13px;font-weight:700}
+.bignum small{color:#A79BFF;font-size:13px;font-weight:700}
 .avail{font-size:13px;color:#8b8b9e;margin:8px 0 12px}.avail b{color:#fff}
 .btnrow{display:flex;gap:8px;flex-wrap:wrap}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:16px}
@@ -144,7 +144,7 @@ animation:rise .55s ease both}
 .card h3{margin:16px 0 6px;font-size:12px;color:#a5b4fc;text-transform:uppercase;letter-spacing:.6px}
 .legend{display:flex;gap:14px;font-size:12px;color:#8b8b9e;margin-bottom:8px}
 .dot{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:5px}
-.dot.g{background:#3fb96f}.dot.p{background:#27C4CC}.dot.gr{background:#55556a}
+.dot.g{background:#3fb96f}.dot.p{background:#7B6CF6}.dot.gr{background:#55556a}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid #1b1b27}
 .row:first-of-type{border-top:0}.row label{font-size:14px}.row small{display:block;color:#8b8b9e;font-size:12px}
 button,select{background:#fff;color:#111;border:0;border-radius:20px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px;transition:transform .15s}
@@ -159,7 +159,7 @@ select,input[type=text]{background:#17171f;color:#eee;border:1px solid #2c2c44;b
 .lb{display:flex;align-items:center;gap:10px;margin:9px 0}
 .lb .who{width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
 .lb .track{flex:1;height:9px;background:#23232f;border-radius:6px;overflow:hidden}
-.lb .fill{height:100%;background:#27C4CC;border-radius:6px;
+.lb .fill{height:100%;background:#7B6CF6;border-radius:6px;
 animation:fill 1s ease both}
 @keyframes fill{from{width:0}}
 .lb .xp{font-size:12px;color:#8b8b9e;min-width:74px;text-align:right}
@@ -170,12 +170,12 @@ animation:fill 1s ease both}
 .heat{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-top:4px}
 .heat i{aspect-ratio:1.4;border-radius:5px;background:#23232f;animation:pop .4s ease both}
 @keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
-.heat i.l1{background:#134E4A}.heat i.l2{background:#0F766E}.heat i.l3{background:#14B8A6}
-.heat i.l4{background:#2DD4BF}.heat i.l5{background:#5EEAD4}
+.heat i.l1{background:#2A2350}.heat i.l2{background:#40358A}.heat i.l3{background:#5A4AC4}
+.heat i.l4{background:#7B6CF6}.heat i.l5{background:#A79BFF}
 form{margin:0}.footer{text-align:center;color:#55556e;font-size:12px;padding:22px}
 /* ===== Wigglesworth control-center theme ===== */
 :root{--bg:#0B0F10;--bg2:#0D1112;--card:#101516;--line:#283033;--line2:#283033;
---txt:#E6EAEB;--mut:#A0ADB2;--mut2:#718087;--acc:#27C4CC;--accsoft:rgba(39,196,204,.10);
+--txt:#E6EAEB;--mut:#A0ADB2;--mut2:#718087;--acc:#7B6CF6;--accsoft:rgba(123,108,246,.12);
 --grn:#4ade80;--red:#f87171}
 body{background:var(--bg)}
 .app{display:flex;min-height:100vh}
@@ -237,13 +237,13 @@ button:disabled{opacity:.6;cursor:wait;transform:none}
 button.danger{background:rgba(248,113,113,.10);color:#f87171;border:1px solid rgba(248,113,113,.4)}
 button.ok{background:rgba(74,222,128,.10);color:#4ade80;border:1px solid rgba(74,222,128,.35)}
 button.dim{background:#1B2224;color:#cfcfe0}
-button.primary{background:var(--acc);border-color:var(--acc);color:#06292b}
+button.primary{background:var(--acc);border-color:var(--acc);color:#0D0824}
 button.primary:hover{background:#2bd6dd}
 select,input[type=text]{background:#0B0F10;color:#eee;border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font-size:13px;max-width:100%}
 select:focus,input[type=text]:focus{outline:none;border-color:var(--acc)}
 button.sw{position:relative;width:42px;height:24px;border-radius:20px;padding:0;background:#2a3437;border:1px solid var(--line2);flex:0 0 auto}
 button.sw .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#8b8b9e;transition:left .15s,background .15s}
-button.sw.on{background:rgba(39,196,204,.35);border-color:var(--acc)}
+button.sw.on{background:rgba(123,108,246,.35);border-color:var(--acc)}
 button.sw.on .knob{left:20px;background:#fff}
 .pill{display:inline-flex;align-items:center;gap:6px;background:#1B2224;border:1px solid var(--line);border-radius:8px;padding:3px 10px;margin:2px;font-size:12.5px}
 .pill input{accent-color:var(--acc)}
@@ -289,8 +289,8 @@ border:1px solid var(--line);display:flex;align-items:center;justify-content:cen
 .lb .fill{background:var(--acc);border-radius:4px;animation:none}
 .lb .xp{color:var(--mut)}
 .heat i{background:#1B2224;border-radius:4px;animation:none}
-.heat i.l1{background:#134E4A}.heat i.l2{background:#0F766E}.heat i.l3{background:#14B8A6}
-.heat i.l4{background:#2DD4BF}.heat i.l5{background:#5EEAD4}
+.heat i.l1{background:#2A2350}.heat i.l2{background:#40358A}.heat i.l3{background:#5A4AC4}
+.heat i.l4{background:#7B6CF6}.heat i.l5{background:#A79BFF}
 .txn{border-top-color:var(--line)}
 .txn .tag{background:#1B2224;color:var(--mut)}
 .lockcard{border-color:rgba(248,113,113,.4)!important;background:var(--card)}
@@ -311,7 +311,7 @@ border:1px solid var(--line);display:flex;align-items:center;justify-content:cen
 .chart{width:100%;height:auto;display:block}
 .chart .grid{stroke:#1E2629;stroke-width:1}
 .chart .line{fill:none;stroke:var(--acc);stroke-width:2}
-.chart .area{fill:rgba(39,196,204,.08);stroke:none}
+.chart .area{fill:rgba(123,108,246,.10);stroke:none}
 .chart .alab{fill:#718087;font-size:10px}
 .evrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
 .evrow:first-of-type{border-top:0}
@@ -1955,10 +1955,9 @@ async def _make_menu(b, gid: int, channel_id: int, rids: list[int]):
     ch = g.get_channel(channel_id) if g else None
     if not ch:
         return
-    import discord
-    embed = discord.Embed(title="🎭 Pick your roles",
-                          description="Tap a button to add/remove it.",
-                          color=discord.Color.blurple())
+    embed = b.ui.embed("🎭 Pick your roles",
+                       "Tap a button below to add or remove a role — changes apply instantly.",
+                       "brand", footer="Wigglesworth • role menu")
     view = b.RoleMenuView(gid, rids)
     for btn in view.children:
         role = g.get_role(btn.role_id)

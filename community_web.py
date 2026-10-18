@@ -289,11 +289,9 @@ def register(app, deps):
                 ch = None
             if ch is not None:
                 try:
-                    import discord as _d
-                    _run(ch.send(embed=_d.Embed(
-                        title="✅ Wigglesworth test message",
-                        description="If you can read this, the bot can write here.",
-                        color=_d.Color.green())))
+                    _run(ch.send(embed=b.ui.ok(
+                        "If you can read this, the bot can write here.",
+                        title="Wigglesworth test message")))
                 except Exception:
                     pass
             return redirect(f"/?key={key}#s{gid}-wizard")

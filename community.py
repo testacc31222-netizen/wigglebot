@@ -15,7 +15,6 @@ from collections import defaultdict
 
 import discord
 from discord.ext import tasks
-from datetime import datetime, timezone
 
 bm = None  # bot module ref, set by setup()
 _bot = None  # commands.Bot instance, set by setup()
@@ -154,6 +153,36 @@ def audit(action: str, gid, **kw) -> None:
         pass
 
 
+# status text -> palette kind, shared by suggestions / cases / applications
+_STATUS_KINDS = {
+    "pending": "info", "review": "warning", "accepted": "success",
+    "progress": "brand", "rejected": "error",
+    "open": "warning", "actioned": "success", "appealed": "info", "closed": "muted",
+    "approved": "success", "info": "warning",
+}
+
+
+def _kind_for(status: str, fallback: str = "info") -> str:
+    return _STATUS_KINDS.get(str(status or "").strip().lower(), fallback)
+
+
+async def _reply(ctx, desc: str, kind: str = "info", title: str = "") -> None:
+    """One themed embed instead of a plain-text command reply."""
+    try:
+        await ctx.send(embed=bm.ui.embed(title, desc, kind))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def _ephemeral(interaction, desc: str, kind: str = "info", title: str = "") -> None:
+    """One themed ephemeral embed instead of a plain-text button reply."""
+    try:
+        await interaction.response.send_message(
+            embed=bm.ui.embed(title, desc, kind), ephemeral=True)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
 # ---------- scheduler: announcements, temp roles, reminders, event reminders ----------
 
 @tasks.loop(seconds=30)
@@ -236,10 +265,12 @@ async def _send_announcement(gid, ann) -> None:
         return
     try:
         if ann.get("embed"):
-            em = discord.Embed(title=(ann.get("title") or "")[:256],
-                               description=(ann.get("body") or "")[:4000],
-                               color=int(ann.get("color", "0x5865F2"), 16))
-            em.set_footer(text="Wigglesworth announcement")
+            em = bm.ui.embed((ann.get("title") or "")[:256], (ann.get("body") or "")[:4000],
+                             "brand", footer="Wigglesworth • announcement")
+            try:
+                em.color = discord.Color(int(str(ann.get("color", "")).strip().lstrip("#"), 16))
+            except (ValueError, TypeError):
+                pass  # keep the brand color
             await ch.send(embed=em)
         else:
             await ch.send((ann.get("body") or "")[:2000] or "(empty)")
@@ -358,14 +389,12 @@ def build_response(cmd: dict, member: discord.Member, guild: discord.Guild, chan
     text = _san(render_vars(cmd.get("response", ""), member, guild, channel))
     if not cmd.get("embed"):
         return text[:2000] or "(empty response)", None
+    em = bm.ui.embed(_san(render_vars(cmd.get("title", "") or "", member, guild, channel))[:256],
+                     text[:4000], "brand")
     try:
-        color = int(str(cmd.get("color", "5865F2")).strip().lstrip("#"), 16)
-    except ValueError:
-        color = 0x5865F2
-    em = discord.Embed(title=_san(render_vars(cmd.get("title", "") or "", member, guild, channel))[:256],
-                       description=text[:4000],
-                       color=color)
-    em.set_footer(text="Wigglesworth")
+        em.color = discord.Color(int(str(cmd.get("color", "")).strip().lstrip("#"), 16))
+    except (ValueError, TypeError):
+        pass  # keep the brand color
     return None, em
 
 
@@ -387,7 +416,9 @@ async def try_custom(message: discord.Message, content: str) -> bool:
                           int(cmd.get("cooldown", 0) or 0))
     if left:
         try:
-            await message.channel.send(f"⏳ `{first}` on cooldown ({left}s).", delete_after=6)
+            await message.channel.send(embed=bm.ui.warn(
+                f"`{bm.PREFIX}{first}` is on cooldown — try again in **{left}s**.", "Slow down"),
+                delete_after=6)
         except (discord.Forbidden, discord.HTTPException):
             pass
         return True
@@ -443,6 +474,13 @@ def user_cases(guild_id, user_id):
 # ---------- 3. suggestions ----------
 
 SUG_STATUS = ("pending", "review", "accepted", "progress", "rejected")
+SUG_STATUS_STYLE = {
+    "pending": ("🟡", "Pending"),
+    "review": ("🔍", "In review"),
+    "accepted": ("✅", "Accepted"),
+    "progress": ("🚧", "In progress"),
+    "rejected": ("❌", "Rejected"),
+}
 
 
 def open_suggestion(guild_id, author_id, author_name, text: str):
@@ -458,18 +496,26 @@ def open_suggestion(guild_id, author_id, author_name, text: str):
 
 
 def sug_embed(guild, sub: dict):
-    score = len(sub.get("up", [])) - len(sub.get("down", []))
-    em = discord.Embed(title=f"💡 Suggestion ({sub['id']})",
-                       description=_san(sub.get("text", "")[:1000]),
-                       color=discord.Color.blurple(),
-                       timestamp=datetime.now(timezone.utc))
-    em.add_field(name="Status", value=sub.get("status", "pending").title(), inline=True)
-    em.add_field(name="Score", value=f"{score:+d} (👍 {len(sub.get('up', []))} / 👎 {len(sub.get('down', []))})",
-                 inline=True)
-    em.add_field(name="By", value=f"<@{sub.get('author_id')}>", inline=True)
+    ups, downs = len(sub.get("up", [])), len(sub.get("down", []))
+    score, total = ups - downs, ups + downs
+    status = str(sub.get("status", "pending")).lower()
+    glyph, label = SUG_STATUS_STYLE.get(status, ("🟡", status.title() or "Pending"))
+    em = bm.ui.embed(f"💡 Suggestion — {sub['id']}",
+                     _san(sub.get("text", "")[:1000]) or "*(empty suggestion)*",
+                     _kind_for(status), footer="Wigglesworth • suggestions")
+    em.add_field(name="Status", value=f"{glyph} **{label}**", inline=True)
+    em.add_field(name="Author", value=f"<@{sub.get('author_id')}>", inline=True)
+    em.add_field(name="Score", value=f"**{score:+d}**", inline=True)
+    if total:
+        frac = ups / total
+        em.add_field(name="Votes",
+                     value=(f"👍 **{ups}** · 👎 **{downs}** — {bm.ui.pct_text(frac)} approval\n"
+                            f"{bm.ui.bar(frac, 14, 'vote')}"),
+                     inline=False)
+    else:
+        em.add_field(name="Votes", value="No votes yet — be the first!", inline=False)
     if sub.get("response"):
         em.add_field(name="Staff response", value=_san(sub["response"][:1000]), inline=False)
-    em.set_footer(text="Wigglesworth suggestions · one vote per person")
     return em
 
 
@@ -482,30 +528,24 @@ class SuggestView(discord.ui.View):
         sub = next((s for s in DATA.get("suggestions.json", {}).get(str(guild.id), {}).values()
                     if s.get("message") == interaction.message.id), None)
         if sub is None:
-            try:
-                await interaction.response.send_message("Suggestion not found.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            await _ephemeral(interaction, "Suggestion not found.", "warning")
             return
         uid = str(interaction.user.id)
         other = "down" if side == "up" else "up"
         if uid in sub.get(side, []):
             sub[side].remove(uid)
-            msg = "Vote removed."
+            msg, kind = "Vote removed.", "info"
         else:
             if uid in sub.get(other, []):
                 sub[other].remove(uid)
             sub.setdefault(side, []).append(uid)
-            msg = "Vote counted!"
+            msg, kind = "Vote counted!", "success"
         _save("suggestions.json")
         try:
             await interaction.message.edit(embed=sug_embed(guild, sub))
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             pass
-        try:
-            await interaction.response.send_message(msg, ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        await _ephemeral(interaction, msg, kind)
 
     @discord.ui.button(label="Upvote", emoji="👍", style=discord.ButtonStyle.success,
                        custom_id="sug_up")
@@ -538,36 +578,34 @@ class PollView(discord.ui.View):
         return PollView(p["options"])
 
 
+_KEYCAPS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣")
+
+
 class _PollButton(discord.ui.Button):
     def __init__(self, idx: int, label: str):
-        super().__init__(label=label, style=discord.ButtonStyle.secondary,
+        super().__init__(label=label, emoji=_KEYCAPS[idx] if idx < len(_KEYCAPS) else None,
+                         style=discord.ButtonStyle.secondary,
                          custom_id=f"poll:{idx}")
 
     async def callback(self, interaction: discord.Interaction) -> None:
         p = _polls().get(str(interaction.message.id))
         if not p or p.get("status") != "open":
-            try:
-                await interaction.response.send_message("This poll is closed.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            await _ephemeral(interaction, "This poll is closed.", "warning")
             return
         uid = str(interaction.user.id)
         votes = p.setdefault("votes", {})
         if votes.get(uid) == self.custom_id.split(":")[1]:
             del votes[uid]
-            msg = "Vote removed."
+            msg, kind = "Vote removed.", "info"
         else:
             votes[uid] = self.custom_id.split(":")[1]
-            msg = "Vote counted!"
+            msg, kind = "Vote counted!", "success"
         _save("polls.json")
         try:
             await interaction.message.edit(embed=poll_embed(p))
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             pass
-        try:
-            await interaction.response.send_message(msg, ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        await _ephemeral(interaction, msg, kind)
 
 
 def poll_embed(p: dict):
@@ -577,14 +615,19 @@ def poll_embed(p: dict):
             counts[int(v)] += 1
         except (ValueError, IndexError):
             pass
-    total = sum(counts) or 1
-    lines = [f"`{i + 1}.` {_san(opt)} — **{c}** ({c * 100 // total}%)"
-             for i, (opt, c) in enumerate(zip(p["options"], counts))]
-    em = discord.Embed(title=f"📊 {_san(p['question'][:250])}",
-                       description="\n".join(lines)[:4000],
-                       color=discord.Color.blurple(),
-                       timestamp=datetime.now(timezone.utc))
-    em.set_footer(text=f"Wigglesworth poll · {sum(counts)} votes · tap to change your vote")
+    total = sum(counts)
+    closed = p.get("status") != "open"
+    votes_txt = f"{bm.ui.fmt(total)} vote{'s' if total != 1 else ''}"
+    lines = []
+    for i, (opt, c) in enumerate(zip(p["options"], counts)):
+        pct = (c / total) if total else 0.0
+        key = _KEYCAPS[i] if i < len(_KEYCAPS) else f"{i + 1}."
+        lines.append(f"{key} **{_san(bm.ui.cut(opt, 80))}**\n"
+                     f"{bm.ui.bar(pct, 12, 'vote')} **{c}** · {bm.ui.pct_text(pct)}")
+    em = bm.ui.embed(f"📊 {_san(p['question'][:250])}", "\n".join(lines)[:4000],
+                     "muted" if closed else "brand",
+                     footer=(f"Wigglesworth • poll closed · {votes_txt}" if closed else
+                             f"Wigglesworth • poll · {votes_txt} · tap to change your vote"))
     return em
 
 
@@ -668,18 +711,19 @@ def restore_backup(gid, snap: dict):
 async def _cmd_serverinfo(ctx) -> None:
     g = ctx.guild
     humans = [m for m in g.members if not m.bot]
-    em = discord.Embed(title=f"🏠 {g.name}", color=discord.Color.blurple())
-    em.add_field(name="ID", value=f"`{g.id}`", inline=True)
-    em.add_field(name="Owner", value=f"<@{g.owner_id}>", inline=True)
-    em.add_field(name="Created", value=f"<t:{int(g.created_at.timestamp())}:D>", inline=True)
-    em.add_field(name="Members", value=f"{len(humans)} humans · {len(g.members) - len(humans)} bots",
-                 inline=True)
-    em.add_field(name="Channels", value=f"{len(g.text_channels)} text · {len(g.voice_channels)} voice",
-                 inline=True)
-    em.add_field(name="Roles", value=str(len(g.roles)), inline=True)
+    em = bm.ui.embed(f"🏠 {g.name}", "Server overview at a glance.", "brand",
+                     footer="Wigglesworth • server info")
     if g.icon:
         em.set_thumbnail(url=g.icon.url)
-    em.set_footer(text="Wigglesworth")
+    em.add_field(name="👑 Owner", value=f"<@{g.owner_id}>", inline=True)
+    em.add_field(name="🆔 Server ID", value=f"`{g.id}`", inline=True)
+    em.add_field(name="📅 Created", value=f"<t:{int(g.created_at.timestamp())}:D>", inline=True)
+    em.add_field(name="👥 Members",
+                 value=f"**{bm.ui.fmt(len(humans))}** humans · {bm.ui.fmt(len(g.members) - len(humans))} bots",
+                 inline=True)
+    em.add_field(name="💬 Channels",
+                 value=f"{len(g.text_channels)} text · {len(g.voice_channels)} voice", inline=True)
+    em.add_field(name="🎭 Roles", value=f"**{bm.ui.fmt(len(g.roles))}**", inline=True)
     await ctx.send(embed=em)
 
 
@@ -690,11 +734,13 @@ async def _cmd_poll(ctx, args: str) -> None:
     except ValueError:
         parts = []
     if len(parts) < 3:
-        await ctx.send(f"Usage: `{bm.PREFIX}poll \"Question\" \"Option A\" \"Option B\" [\"C\"...]` (2–6 options)")
+        await _reply(ctx, f"`{bm.PREFIX}poll \"Question\" \"Option A\" \"Option B\" [\"C\"...]`\n"
+                          "Use 2–6 options, each wrapped in quotes.", "info", "📊 Create a poll")
         return
     q, opts = parts[0][:250], [o[:80] for o in parts[1:7]]
     if len(opts) < 2:
-        await ctx.send("Give at least 2 options.")
+        await _reply(ctx, "Give me at least **2 options** to choose from.", "warning",
+                     "📊 Create a poll")
         return
     q, opts = _san(q), [_san(o) for o in opts]
     p = {"question": q, "options": opts, "votes": {}, "status": "open",
@@ -708,7 +754,7 @@ async def _cmd_poll(ctx, args: str) -> None:
 
 async def _cmd_poll_end(ctx, args: str) -> None:
     if not has_perm(ctx.author, "mod"):
-        await ctx.send("Mods only.")
+        await _reply(ctx, "Only moderators can end polls.", "warning", "🔒 Mods only")
         return
     ref = None
     if ctx.message.reference and ctx.message.reference.message_id:
@@ -717,7 +763,8 @@ async def _cmd_poll_end(ctx, args: str) -> None:
         ref = args.strip()
     p = _polls().get(ref or "")
     if not p or p.get("guild") != str(ctx.guild.id):
-        await ctx.send(f"Reply to the poll with `{bm.PREFIX}poll end`, or pass its message ID.")
+        await _reply(ctx, f"Reply to the poll with `{bm.PREFIX}poll end`, or pass its message ID.",
+                     "warning", "Poll not found")
         return
     p["status"] = "closed"
     _save("polls.json")
@@ -726,7 +773,7 @@ async def _cmd_poll_end(ctx, args: str) -> None:
         await msg.edit(embed=poll_embed(p), view=None)
     except (discord.Forbidden, discord.HTTPException, discord.NotFound):
         pass
-    await ctx.send("📊 Poll closed — final results above.")
+    await _reply(ctx, "Final results are in the poll above.", "success", "📊 Poll closed")
 
 
 async def _cmd_remind(ctx, args: str) -> None:
@@ -736,12 +783,17 @@ async def _cmd_remind(ctx, args: str) -> None:
                 if r.get("guild") == str(ctx.guild.id) and r.get("user_id") == str(ctx.author.id)
                 and r.get("status") == "active"]
         if not mine:
-            await ctx.send(f"No active reminders. Usage: `{bm.PREFIX}remind <10s+> <text>` or "
-                           f"`{bm.PREFIX}remind every <dur> <text>`")
+            await _reply(ctx, f"**Usage**\n"
+                              f"• `{bm.PREFIX}remind <10s+> <text>` — one-shot reminder\n"
+                              f"• `{bm.PREFIX}remind every <1m+> <text>` — repeating reminder\n"
+                              f"• `{bm.PREFIX}remind list` · `{bm.PREFIX}remind cancel <id>`",
+                         "info", "⏰ No active reminders")
             return
-        lines = [f"`{r['id']}` <t:{int(r['next_run'])}:R> — {(r.get('text') or '')[:80]}"
+        lines = [f"`{r['id']}` — <t:{int(r['next_run'])}:R> · {(r.get('text') or '')[:80]}"
                  + (" 🔁" if r.get("interval_s") else "") for r in mine[:10]]
-        await ctx.send("⏰ Your reminders:\n" + "\n".join(lines))
+        em = bm.ui.embed("⏰ Your reminders", "\n".join(lines), "info",
+                         footer="Wigglesworth • reminders")
+        await ctx.send(embed=em)
         return
     if parts[0].lower() == "cancel":
         rid = parts[1].strip() if len(parts) > 1 else ""
@@ -750,11 +802,12 @@ async def _cmd_remind(ctx, args: str) -> None:
                     and r.get("status") == "active"), None)
         if hit is None or (hit.get("user_id") != str(ctx.author.id)
                            and not has_perm(ctx.author, "mod")):
-            await ctx.send("Reminder not found (or not yours).")
+            await _reply(ctx, "That reminder doesn't exist — or it isn't yours.", "warning",
+                         "Reminder not found")
             return
         hit["status"] = "cancelled"
         _save("reminders.json")
-        await ctx.send("⏰ Reminder cancelled.")
+        await _reply(ctx, f"Reminder `{rid}` cancelled.", "success", "⏰ Reminder cancelled")
         return
     rest = args or ""
     interval = 0
@@ -762,19 +815,25 @@ async def _cmd_remind(ctx, args: str) -> None:
         rest = rest[6:].strip()
         dur_s, rest2 = _split_dur(rest)
         if dur_s is None or dur_s < 60:
-            await ctx.send(f"Recurring minimum is 1m. Usage: `{bm.PREFIX}remind every <dur> <text>`")
+            await _reply(ctx, f"Recurring reminders need a duration of **1m or more**.\n"
+                              f"Usage: `{bm.PREFIX}remind every <dur> <text>`", "warning",
+                         "⏰ Bad duration")
             return
         interval = dur_s
         rest = rest2
     else:
         dur_s, rest2 = _split_dur(rest)
         if dur_s is None or dur_s < 10:
-            await ctx.send(f"Usage: `{bm.PREFIX}remind <10s+> <text>` · `{bm.PREFIX}remind every <1m+> <text>` · "
-                           f"`{bm.PREFIX}remind list|cancel <id>`")
+            await _reply(ctx, f"Reminders need a delay of **10s or more**.\n\n**Usage**\n"
+                              f"• `{bm.PREFIX}remind <10s+> <text>`\n"
+                              f"• `{bm.PREFIX}remind every <1m+> <text>`\n"
+                              f"• `{bm.PREFIX}remind list` · `{bm.PREFIX}remind cancel <id>`",
+                         "warning", "⏰ Bad duration")
             return
         rest = rest2
     if not rest.strip():
-        await ctx.send("Reminder text can't be empty.")
+        await _reply(ctx, "Add some text for me to remind you about.", "warning",
+                     "⏰ Empty reminder")
         return
     r = {"id": new_id("R"), "guild": str(ctx.guild.id), "user_id": str(ctx.author.id),
          "channel_id": ctx.channel.id, "text": _san(rest.strip()[:1500]),
@@ -782,8 +841,10 @@ async def _cmd_remind(ctx, args: str) -> None:
          "status": "active", "created": time.time(), "last_error": ""}
     store("reminders.json", []).append(r)
     _save("reminders.json")
-    await ctx.send(f"⏰ Got it — I'll ping you <t:{int(r['next_run'])}:R>"
-                   + (" (repeating)" if interval else ""))
+    await _reply(ctx, f"I'll ping you <t:{int(r['next_run'])}:R> in this channel"
+                      + (" — repeating." if interval else ".")
+                      + f"\nCancel with `{bm.PREFIX}remind cancel {r['id']}`.",
+                 "success", "⏰ Reminder set")
 
 
 def _split_dur(s: str):
@@ -798,11 +859,13 @@ def _split_dur(s: str):
 async def _cmd_suggest(ctx, text: str) -> None:
     text = (text or "").strip()
     if not text:
-        await ctx.send(f"Usage: `{bm.PREFIX}suggest <your idea>` (max 1000 chars)")
+        await _reply(ctx, f"Usage: `{bm.PREFIX}suggest <your idea>`\n"
+                          "Keep it under 1000 characters.", "info", "💡 Suggest an idea")
         return
     left = check_cooldown(ctx.guild.id, "suggest", ctx.author.id, 60)
     if left:
-        await ctx.send(f"⏳ Slow down ({left}s).")
+        await _reply(ctx, f"You just posted a suggestion — try again in **{left}s**.", "warning",
+                     "💡 Slow down")
         return
     cfg = guild_cfg(ctx.guild.id)
     ch = ctx.guild.get_channel(cfg.get("suggest_channel_id") or 0)
@@ -811,13 +874,15 @@ async def _cmd_suggest(ctx, text: str) -> None:
     try:
         msg = await target.send(embed=sug_embed(ctx.guild, sub), view=SuggestView())
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Couldn't post: {exc}")
+        await _reply(ctx, f"I couldn't post the suggestion: {exc}", "error",
+                     "💡 Suggestion not posted")
         return
     sub["message"] = msg.id
     sub["channel"] = target.id
     _save("suggestions.json")
     if target.id != ctx.channel.id:
-        await ctx.send(f"💡 Posted in {target.mention}!")
+        await _reply(ctx, f"Your suggestion is live in {target.mention} — go upvote it!",
+                     "success", "💡 Suggestion posted")
 
 
 async def _cmd_temprole(ctx, args: str) -> None:
@@ -830,19 +895,21 @@ async def _cmd_temprole(ctx, args: str) -> None:
         act = [t for t in DATA.get("temproles.json", [])
                if t.get("guild") == str(ctx.guild.id) and t.get("status") == "active"]
         if not act:
-            await ctx.send("No active temp roles.")
+            await _reply(ctx, "No temp roles are active right now.", "info", "⏳ Temp roles")
             return
         lines = []
         for t in sorted(act, key=lambda x: x.get("expires_at", 0))[:15]:
             m = ctx.guild.get_member(int(t.get("user_id", 0)))
             r = ctx.guild.get_role(int(t.get("role_id", 0)))
-            lines.append(f"<@{t['user_id']}> → **{(r.name if r else '?')}** "
-                         f"ends <t:{int(t.get('expires_at', 0))}:R> (`{t['id']}`)")
+            lines.append(f"<@{t['user_id']}> → **{(r.name if r else '?')}** — "
+                         f"ends <t:{int(t.get('expires_at', 0))}:R> · `{t['id']}`")
             _ = m
-        await ctx.send("⏳ Active temp roles:\n" + "\n".join(lines))
+        em = bm.ui.embed("⏳ Active temp roles", "\n".join(lines)[:4000], "brand",
+                         footer="Wigglesworth • temp roles")
+        await ctx.send(embed=em)
         return
     if not has_perm(ctx.author, "admin"):
-        await ctx.send("Admins only.")
+        await _reply(ctx, "Only admins can manage temp roles.", "warning", "🔒 Admins only")
         return
     if parts[0].lower() == "end" and len(parts) >= 3:
         hit = next((t for t in DATA.get("temproles.json", [])
@@ -850,15 +917,20 @@ async def _cmd_temprole(ctx, args: str) -> None:
                     and str(t.get("user_id")) == parts[1].strip("<>@!").split()[0]
                     and str(t.get("role_id")) == parts[2].strip("<>@!&")), None)
         if hit is None:
-            await ctx.send("No matching active temp role.")
+            await _reply(ctx, "I couldn't find a matching active temp role.", "warning",
+                         "⏳ Temp roles")
             return
         hit["expires_at"] = time.time() - 1
         _save("temproles.json")
-        await ctx.send("⏳ Expiring now — the scheduler will remove it within a minute.")
+        await _reply(ctx, "The role will be removed within a minute.", "success",
+                     "⏳ Temp role ending")
         return
     if len(parts) < 3:
-        await ctx.send(f"Usage: `{bm.PREFIX}temprole @user @role <dur> [reason]` · "
-                       f"`{bm.PREFIX}temprole list` · `{bm.PREFIX}temprole end @user @role`")
+        await _reply(ctx, f"**Usage**\n"
+                          f"• `{bm.PREFIX}temprole @user @role <dur> [reason]` — assign\n"
+                          f"• `{bm.PREFIX}temprole list` — show active ones\n"
+                          f"• `{bm.PREFIX}temprole end @user @role` — end early",
+                     "info", "⏳ Temp roles")
         return
     try:
         member = ctx.guild.get_member(int(parts[0].strip("<>@!")))
@@ -869,12 +941,13 @@ async def _cmd_temprole(ctx, args: str) -> None:
     reason = " ".join(parts[3:])[:200] or "temp role"
     err = _validate_role_grant(ctx.guild, ctx.author, member, role)
     if err or dur_s is None:
-        await ctx.send(err or f"Bad duration. Use like `10m`, `2h`, `7d` (1m–30d).")
+        await _reply(ctx, err or "Bad duration — use something like `10m`, `2h`, `7d` (1m–30d).",
+                     "warning", "⏳ Temp roles")
         return
     try:
         await member.add_roles(role, reason=f"temp role by {ctx.author}: {reason}")
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Failed: {exc}")
+        await _reply(ctx, f"I couldn't assign the role: {exc}", "error", "⏳ Temp roles")
         return
     tr = {"id": new_id("T"), "guild": str(ctx.guild.id), "user_id": str(member.id),
           "role_id": str(role.id), "reason": reason, "by_id": str(ctx.author.id),
@@ -883,7 +956,9 @@ async def _cmd_temprole(ctx, args: str) -> None:
     store("temproles.json", []).append(tr)
     _save("temproles.json")
     audit("temprole_assign", ctx.guild.id, user=str(member.id), role=str(role.id))
-    await ctx.send(f"⏳ **{member.display_name}** has **{role.name}** until <t:{int(tr['expires_at'])}:F>.")
+    await _reply(ctx, f"**{member.display_name}** now has **{role.name}** until "
+                      f"<t:{int(tr['expires_at'])}:F> (<t:{int(tr['expires_at'])}:R>).",
+                 "success", "⏳ Temp role assigned")
 
 
 def _validate_role_grant(guild, author, member, role):
@@ -923,29 +998,33 @@ async def _cmd_events(ctx, args: str) -> None:
          if e.get("status") == "active" and e.get("starts_at", 0) > now],
         key=lambda e: e.get("starts_at", 0))[:10]
     if not upcoming:
-        await ctx.send("No upcoming events. Check the dashboard to see past ones.")
+        await _reply(ctx, "No upcoming events right now. Check the dashboard for past ones.",
+                     "info", "📅 Events")
         return
     lines = []
     for e in upcoming:
         going = sum(1 for v in (e.get("rsvps", {}) or {}).values() if v == "going")
-        lines.append(f"**{e.get('title', '?')[:80]}** — <t:{int(e.get('starts_at', 0))}:F> · "
-                     f"{going} going (`{e['id']}`)")
-    await ctx.send("📅 Upcoming events:\n" + "\n".join(lines))
+        lines.append(f"**{e.get('title', '?')[:80]}**\n"
+                     f"<t:{int(e.get('starts_at', 0))}:F> · {going} going · `{e['id']}`")
+    em = bm.ui.embed("📅 Upcoming events", "\n\n".join(lines)[:4000], "brand",
+                     footer="Wigglesworth • events")
+    await ctx.send(embed=em)
 
 
 async def _cmd_cases(ctx, args: str) -> None:
     if not has_perm(ctx.author, "mod"):
-        await ctx.send("Mods only.")
+        await _reply(ctx, "Only moderators can look up cases.", "warning", "🔒 Mods only")
         return
     parts = (args or "").strip().split(None, 1)
     if not parts:
-        await ctx.send(f"Usage: `{bm.PREFIX}cases @user` or `{bm.PREFIX}cases CASE-XXXXXX`")
+        await _reply(ctx, f"Usage: `{bm.PREFIX}cases @user` or `{bm.PREFIX}cases CASE-XXXXXX`",
+                     "info", "📁 Cases")
         return
     q = parts[0].strip("<>@!")
     if q.upper().startswith("CASE-") or len(q) == 6:
         c = find_case(ctx.guild.id, q)
         if c is None:
-            await ctx.send("Case not found.")
+            await _reply(ctx, f"No case matches `{q}`.", "warning", "📁 Case not found")
             return
         await ctx.send(embed=case_embed(ctx.guild, c))
         return
@@ -954,57 +1033,62 @@ async def _cmd_cases(ctx, args: str) -> None:
     except (ValueError, discord.HTTPException, discord.NotFound):
         member = None
     if member is None:
-        await ctx.send("Member not found.")
+        await _reply(ctx, "I couldn't find that member.", "warning", "📁 Cases")
         return
-    hist = sorted(user_cases(ctx.guild.id, member.id), key=lambda c: c.get("created", 0),
-                  reverse=True)[:10]
+    all_cases = user_cases(ctx.guild.id, member.id)
+    hist = sorted(all_cases, key=lambda c: c.get("created", 0), reverse=True)[:10]
     if not hist:
-        await ctx.send(f"✅ **{member.display_name}** has a clean record.")
+        await _reply(ctx, f"**{member.display_name}** has a clean record — no cases on file.",
+                     "success", "📁 Cases")
         return
-    lines = [f"`{c['id']}` **{c.get('action', '?')}** — {c.get('reason', '—')[:80]} "
-             f"({c.get('status', 'open')})" for c in hist]
-    await ctx.send(f"📁 **{member.display_name}** — {len(user_cases(ctx.guild.id, member.id))} case(s):\n"
-                   + "\n".join(lines))
+    lines = [f"`{c['id']}` **{c.get('action', '?').title()}** — {(c.get('reason') or '—')[:80]} "
+             f"· {c.get('status', 'open')}" for c in hist]
+    em = bm.ui.embed(f"📁 Cases — {member.display_name}", "\n".join(lines)[:4000], "warning",
+                     footer=f"Wigglesworth • {len(all_cases)} case(s) on record")
+    await ctx.send(embed=em)
 
 
 def case_embed(guild, c: dict):
     m = guild.get_member(int(c.get("target_id", 0))) if str(c.get("target_id", "")).isdigit() else None
-    em = discord.Embed(title=f"📁 {c['id']} — {c.get('action', '?').title()}",
-                       description=(c.get("reason") or "—")[:1000],
-                       color=discord.Color.orange(),
-                       timestamp=datetime.now(timezone.utc))
+    status = str(c.get("status", "open")).lower()
+    em = bm.ui.embed(f"📁 Case {c['id']} — {c.get('action', '?').title()}",
+                     (c.get("reason") or "—")[:1000], _kind_for(status, "warning"),
+                     footer="Wigglesworth • moderation")
     em.add_field(name="User", value=m.mention if m else f"`{c.get('target_id')}`", inline=True)
     em.add_field(name="Moderator", value=f"<@{c.get('mod_id')}>", inline=True)
-    em.add_field(name="Status", value=c.get("status", "open").title(), inline=True)
-    em.add_field(name="Date", value=f"<t:{int(c.get('created', 0))}:F>", inline=True)
+    em.add_field(name="Status", value=f"**{status.title() or 'Open'}**", inline=True)
+    em.add_field(name="Opened", value=f"<t:{int(c.get('created', 0))}:F>", inline=True)
     if c.get("evidence"):
         em.add_field(name="Evidence", value=c["evidence"][:500], inline=False)
     if c.get("appeal"):
         em.add_field(name="Appeal", value=c["appeal"][:500], inline=False)
     notes = c.get("notes", [])[-3:]
     if notes:
-        em.add_field(name="Notes", value="\n".join(f"• {n[:200]}" for n in notes), inline=False)
-    em.set_footer(text="Wigglesworth moderation")
+        em.add_field(name="Latest notes", value="\n".join(f"• {n[:200]}" for n in notes), inline=False)
     return em
 
 
 async def _cmd_apply(ctx, args: str) -> None:
     forms = [f for f in app_forms(ctx.guild.id) if f.get("open", True)]
     if not forms:
-        await ctx.send("No open applications right now.")
+        await _reply(ctx, "There are no open applications right now — check back later.",
+                     "info", "📝 Applications")
         return
     want = (args or "").strip().lower()
     if want:
         form = next((f for f in forms if f["id"].lower() == want or f.get("name", "").lower() == want), None)
         if form is None:
-            await ctx.send("Form not found. Run `.apply` to see open forms.")
+            await _reply(ctx, f"No form matches `{want}` — run `{bm.PREFIX}apply` to see what's open.",
+                         "warning", "📝 Form not found")
             return
         forms = [form]
     try:
-        await ctx.send("📝 Pick a form to apply:", view=ApplyListView(forms),
-                       ephemeral=False)
+        await ctx.send(embed=bm.ui.embed("📝 Applications",
+                                         "Pick a form below — I'll open it privately for you.",
+                                         "brand"),
+                       view=ApplyListView(forms))
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Failed: {exc}")
+        await _reply(ctx, f"I couldn't show the forms: {exc}", "error", "📝 Applications")
 
 
 def ev_list(gid):
@@ -1095,15 +1179,17 @@ def app_subs(gid):
 def app_embed(guild, form: dict, sub: dict):
     lines = [f"**{f.get('label', '?')}:** {(sub.get('answers', {}) or {}).get(str(i), '—')[:500]}"
              for i, f in enumerate(form.get("fields", []))]
-    em = discord.Embed(title=f"📝 {form.get('name', 'Application')} — {sub['id']}",
-                       description="\n".join(lines)[:4000] or "(no answers)",
-                       color=discord.Color.blurple(),
-                       timestamp=datetime.now(timezone.utc))
+    status = str(sub.get("status", "pending")).lower()
+    em = bm.ui.embed(f"📝 {form.get('name', 'Application')} — {sub['id']}",
+                     "\n".join(lines)[:4000] or "*(no answers)*",
+                     _kind_for(status),
+                     footer="Wigglesworth • applications")
     em.add_field(name="Applicant", value=f"<@{sub.get('user_id')}>", inline=True)
-    em.add_field(name="Status", value=sub.get("status", "pending").title(), inline=True)
+    em.add_field(name="Status", value=f"**{status.title() or 'Pending'}**", inline=True)
+    if sub.get("decided_by"):
+        em.add_field(name="Reviewed by", value=f"<@{sub['decided_by']}>", inline=True)
     if sub.get("reviewer_note"):
         em.add_field(name="Reviewer note", value=sub["reviewer_note"][:1000], inline=False)
-    em.set_footer(text="Wigglesworth applications")
     return em
 
 
@@ -1123,10 +1209,7 @@ class ApplyModal(discord.ui.Modal):
         guild = interaction.guild
         form = next((x for x in app_forms(guild.id) if x["id"] == self.form_id and x.get("open", True)), None)
         if form is None:
-            try:
-                await interaction.response.send_message("That form is closed.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            await _ephemeral(interaction, "That form is closed.", "warning")
             return
         answers = {str(i): c.value[:1000] for i, c in enumerate(self.children)}
         subs = app_subs(guild.id)
@@ -1144,11 +1227,8 @@ class ApplyModal(discord.ui.Modal):
                 _save("applications.json")
             except (discord.Forbidden, discord.HTTPException):
                 pass
-        try:
-            await interaction.response.send_message("✅ Application submitted! Staff will review it soon.",
-                                                    ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        await _ephemeral(interaction, "Application submitted! Staff will review it soon.",
+                         "success")
 
 
 class ApplyListView(discord.ui.View):
@@ -1173,10 +1253,7 @@ class _ApplyButton(discord.ui.Button):
         form = next((x for x in app_forms(interaction.guild.id)
                      if x["id"] == self.form_id and x.get("open", True)), None)
         if form is None:
-            try:
-                await interaction.response.send_message("That form is closed.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            await _ephemeral(interaction, "That form is closed.", "warning")
             return
         try:
             await interaction.response.send_modal(ApplyModal(form))
@@ -1201,18 +1278,12 @@ class _ReviewButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         if not has_perm(interaction.user, "admin"):
-            try:
-                await interaction.response.send_message("Staff only.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            await _ephemeral(interaction, "Staff only.", "error")
             return
         subs = app_subs(guild.id)
         sub = subs.get(self.sub_id)
         if sub is None or sub.get("status") not in ("pending", "info"):
-            try:
-                await interaction.response.send_message("Already decided.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            await _ephemeral(interaction, "Already decided.", "warning")
             return
         form = next((x for x in app_forms(guild.id) if x["id"] == sub.get("form_id")), None)
         status = {"approve": "approved", "reject": "rejected", "info": "info"}[self.act]
@@ -1228,34 +1299,48 @@ class _ReviewButton(discord.ui.Button):
         member = guild.get_member(int(sub["user_id"]))
         if member is not None and self.act in ("approve", "reject"):
             try:
-                await member.send(f"📝 Your application **{(form or {}).get('name', '')}** was **{status}**.")
+                await member.send(embed=bm.ui.embed(
+                    "📝 Application update",
+                    f"Your application **{(form or {}).get('name', '')}** was **{status}**.",
+                    _kind_for(status, "info")))
             except (discord.Forbidden, discord.HTTPException):
                 pass
-        try:
-            await interaction.response.send_message(f"Marked **{status}**.", ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        await _ephemeral(interaction, f"Marked **{status}**.", _kind_for(status, "info"))
 
 
 # ---------- 10. events & RSVP ----------
 
 def ev_embed(ev: dict):
-    going = sum(1 for v in (ev.get("rsvps", {}) or {}).values() if v == "going")
-    maybe = sum(1 for v in (ev.get("rsvps", {}) or {}).values() if v == "maybe")
+    rsvps = ev.get("rsvps", {}) or {}
+    going = sum(1 for v in rsvps.values() if v == "going")
+    maybe = sum(1 for v in rsvps.values() if v == "maybe")
+    wait = sum(1 for v in rsvps.values() if v == "waitlist")
     limit = int(ev.get("limit", 0) or 0)
-    cap = f" / {limit}" if limit else ""
-    wait = sum(1 for v in (ev.get("rsvps", {}) or {}).values() if v == "waitlist")
-    em = discord.Embed(title=f"📅 {ev.get('title', 'Event')[:250]}",
-                       description=(ev.get("desc", "") or "")[:2000] or "(no description)",
-                       color=discord.Color.blurple(),
-                       timestamp=datetime.now(timezone.utc))
-    em.add_field(name="Starts", value=f"<t:{int(ev.get('starts_at', 0))}:F> (<t:{int(ev.get('starts_at', 0))}:R>)",
+    when = int(ev.get("starts_at", 0))
+    started = bool(ev.get("started")) or (when and time.time() >= when)
+    if ev.get("status") != "active":
+        kind = "muted"
+    elif started:
+        kind = "gold"
+    else:
+        kind = "brand"
+    em = bm.ui.embed(f"📅 {ev.get('title', 'Event')[:250]}",
+                     (ev.get("desc", "") or "")[:2000] or "*No description.*", kind,
+                     footer="Wigglesworth • events · tap to RSVP (one spot per person)")
+    em.add_field(name="🕒 Starts",
+                 value=(f"Started <t:{when}:R>" if started else f"<t:{when}:F> · <t:{when}:R>")
+                 if when else "date to be announced",
                  inline=False)
-    em.add_field(name="Going", value=f"{going}{cap}", inline=True)
-    em.add_field(name="Maybe", value=str(maybe), inline=True)
     if limit:
-        em.add_field(name="Waitlist", value=str(wait), inline=True)
-    em.set_footer(text="Wigglesworth events · tap to RSVP (one spot per person)")
+        cap = min(going / limit, 1.0)
+        em.add_field(name="✅ Going",
+                     value=f"**{going} / {limit}**\n{bm.ui.bar(cap, 12, 'vote')}",
+                     inline=False)
+    else:
+        em.add_field(name="✅ Going", value=f"**{going}**", inline=True)
+    em.add_field(name="🤔 Maybe", value=f"**{maybe}**", inline=True)
+    if limit:
+        em.add_field(name="⏳ Waitlist", value=f"**{wait}**", inline=True)
     return em
 
 
@@ -1277,31 +1362,26 @@ class _RSVPButton(discord.ui.Button):
         ev = next((e for e in ev_list(interaction.guild.id)
                    if e["id"] == self.ev_id and e.get("status") == "active"), None)
         if ev is None:
-            try:
-                await interaction.response.send_message("Event is over or cancelled.", ephemeral=True)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            await _ephemeral(interaction, "Event is over or cancelled.", "warning")
             return
         uid = str(interaction.user.id)
         rsvps = ev.setdefault("rsvps", {})
         if self.choice == "decline":
             rsvps.pop(uid, None)
-            msg = "RSVP removed."
+            msg, kind = "RSVP removed.", "info"
         else:
             going = sum(1 for u, v in rsvps.items() if v == "going" and u != uid)
             limit = int(ev.get("limit", 0) or 0)
             if self.choice == "going" and limit and going >= limit:
                 rsvps[uid] = "waitlist"
-                msg = "Event is full — you're on the waitlist."
+                msg, kind = "Event is full — you're on the waitlist.", "warning"
             else:
                 rsvps[uid] = self.choice
                 msg = f"Marked **{self.choice}**!"
+                kind = "success" if self.choice == "going" else "info"
         _save("eventsched.json")
         try:
             await interaction.message.edit(embed=ev_embed(ev))
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             pass
-        try:
-            await interaction.response.send_message(msg, ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        await _ephemeral(interaction, msg, kind)

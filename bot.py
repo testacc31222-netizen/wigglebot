@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 import aiohttp
 import security
 import community
+import stats
+import ui
 
 load_dotenv()
 
@@ -47,6 +49,9 @@ DATA_FILE = DATA_DIR / "guild_config.json"
 XP_FILE = DATA_DIR / "xp.json"
 AFK_FILE = DATA_DIR / "afk.json"
 RR_FILE = DATA_DIR / "rolemenus.json"
+
+# persistent per-user message counters (messages.json) — batched writes
+stats.configure(DATA_DIR)
 
 
 def _load_rr() -> dict:
@@ -92,8 +97,20 @@ def afk_since_ago(since: float) -> str:
     return f"{s // 86400}d"
 
 # ---------- XP / leveling ----------
-XP_MIN, XP_MAX = 5, 15
+# Defaults: 15–25 XP per qualifying message, one XP gain per 60s per member.
+# Everything is tunable per server with `.xpconfig` (Admin).
+XP_MIN, XP_MAX = 15, 25
 XP_COOLDOWN_S = 60
+XP_MIN_LENGTH = 4
+
+
+def xp_settings(cfg: dict) -> tuple[int, int, int, int]:
+    """(min, max, cooldown_s, min_chars) from guild config, clamped to safe ranges."""
+    lo = max(1, min(100, int(cfg.get("xp_min", XP_MIN))))
+    hi = max(lo, min(500, int(cfg.get("xp_max", XP_MAX))))
+    cd = max(10, min(3600, int(cfg.get("xp_cooldown_seconds", XP_COOLDOWN_S))))
+    ml = max(1, min(200, int(cfg.get("xp_min_length", XP_MIN_LENGTH))))
+    return lo, hi, cd, ml
 
 
 def _load_xp() -> dict:
@@ -134,6 +151,7 @@ async def events_flush_loop() -> None:
         EVENTS_FILE.write_text(json.dumps(events_data), encoding="utf-8")
     except OSError:
         pass
+    stats.flush()  # persist batched message counters
 
 
 xp_data: dict[str, dict[str, dict]] = _load_xp()  # guild_id -> user_id -> {xp, last}
@@ -147,21 +165,63 @@ def xp_for_level(level: int) -> int:
     return 100 * level * level
 
 
-def award_xp(guild_id: int, user_id: int) -> tuple[int, int, bool]:
-    """Add XP if cooldown passed. Returns (xp, level, leveled_up)."""
+def award_xp(guild_id: int, user_id: int, cfg: dict | None = None) -> tuple[int, int, bool]:
+    """Add XP if the member's cooldown passed. Returns (xp, level, leveled_up).
+
+    Callers gate on message quality (min length, not a command, not during a
+    raid) — this function only handles the cooldown + random gain so that XP
+    cannot be farmed faster than the configured pace.
+    """
     now = time.time()
+    if cfg is None:
+        cfg = get_config(guild_id)
+    lo, hi, cooldown, _ = xp_settings(cfg)
     g = xp_data.setdefault(str(guild_id), {})
     entry = g.setdefault(str(user_id), {"xp": 0, "last": 0})
-    if now - float(entry.get("last", 0)) < XP_COOLDOWN_S:
+    if now - float(entry.get("last", 0)) < cooldown:
         return int(entry["xp"]), xp_level(int(entry["xp"])), False
     old_level = xp_level(int(entry["xp"]))
-    gained = random.randint(XP_MIN, XP_MAX)
+    gained = random.randint(lo, hi)
     entry["xp"] = int(entry["xp"]) + gained
     entry["last"] = now
     _save_xp(xp_data)
     track(guild_id, "xp", u=str(user_id), amt=gained)
     new_level = xp_level(int(entry["xp"]))
     return int(entry["xp"]), new_level, new_level > old_level
+
+
+def xp_board(guild_id: int) -> list[tuple[str, int]]:
+    """[(user_id_str, xp)] for a guild, highest first."""
+    return sorted(
+        ((uid, int(e.get("xp", 0))) for uid, e in xp_data.get(str(guild_id), {}).items()),
+        key=lambda kv: kv[1], reverse=True,
+    )
+
+
+def xp_rank(guild_id: int, user_id: int) -> tuple[int | None, int]:
+    """(rank, tracked_count) — rank is None when the user has no XP entry."""
+    uid = str(user_id)
+    board = xp_board(guild_id)
+    for i, (other, _) in enumerate(board, start=1):
+        if other == uid:
+            return i, len(board)
+    return None, len(board)
+
+
+async def send_levelup(message: discord.Message, cfg: dict, level: int, xp: int) -> None:
+    """Celebrate a level-up with the standard XP card (optionally elsewhere)."""
+    base, nxt = xp_for_level(level), xp_for_level(level + 1)
+    em = ui.levelup_embed(
+        name=getattr(message.author, "display_name", str(message.author)),
+        avatar=message.author.display_avatar.url if getattr(message.author, "display_avatar", None) else None,
+        level=level, xp=xp, base=base, nxt=nxt, guild_name=message.guild.name,
+    )
+    channel = message.guild.get_channel(cfg.get("levelup_channel_id") or 0) or message.channel
+    try:
+        await channel.send(content=message.author.mention, embed=em,
+                           allowed_mentions=discord.AllowedMentions(users=True))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 DEFAULT_GUILD_CONFIG = {
     "join_threshold_count": 5,      # N joins ...
@@ -195,6 +255,13 @@ DEFAULT_GUILD_CONFIG = {
     "abuse_channel_id": None,   # channel the abuse ping goes to (blank = where used)
     "welcome_channel_id": None,
     "goodbye_channel_id": None,
+    # --- leveling (additive; old installs merge these automatically)
+    "xp_min": 15,               # XP per qualifying message (min)
+    "xp_max": 25,               # XP per qualifying message (max)
+    "xp_cooldown_seconds": 60,  # one XP gain per member per N seconds
+    "xp_min_length": 4,         # messages shorter than this earn nothing
+    "xp_ignore_commands": True, # bot commands don't earn XP (anti-farm)
+    "levelup_channel_id": None, # announce level-ups here (blank = current channel)
     # --- security expansion (additive; old installs merge these automatically)
     "antinuke_enabled": False,
     "antinuke_window": 60,        # seconds per burst window
@@ -224,23 +291,12 @@ DEFAULT_GUILD_CONFIG = {
 VALID_ACTIONS = {"kick", "ban", "timeout", "none"}
 
 
-BRAND = {
-    "raid": discord.Color.red(),
-    "night": discord.Color.dark_purple(),
-    "day": discord.Color.orange(),
-    "win": discord.Color.gold(),
-    "good": discord.Color.green(),
-    "bad": discord.Color.red(),
-    "info": discord.Color.blurple(),
-}
+BRAND = ui.PALETTE
 
 
 def E(title: str, desc: str = "", kind: str = "info") -> discord.Embed:
-    embed = discord.Embed(title=title, description=desc,
-                          color=BRAND.get(kind, BRAND["info"]),
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text="Wigglesworth")
-    return embed
+    """Standard Wigglesworth embed — delegates to the ui design system."""
+    return ui.embed(title, desc, kind)
 
 
 # ---------- config persistence ----------
@@ -524,7 +580,9 @@ async def schedule_auto_unlock(guild: discord.Guild, cfg: dict) -> None:
         if raid_active.get(guild.id):
             raid_active[guild.id] = False
             n = await unlock_guild(guild, reason="auto-unlock (timer expired)")
-            await send_log(guild, f"🔓 Auto-unlock: restored {n} channel(s). Raid mode OFF.", event="unlock")
+            await send_log(guild, "", event="unlock", embed=ui.embed(
+                "🔓 Auto-unlock", f"Restored **{n}** channel(s). Raid mode **OFF**.",
+                "success", footer=f"{ui.FOOTER} • raid"))
 
     raid_lock_task[guild.id] = asyncio.create_task(_unlock_later())
 
@@ -583,19 +641,15 @@ async def trigger_raid(guild: discord.Guild, cfg: dict, recent_members: list[dis
             outcome = await punish_member(m, action, "Anti-raid: mass-join participant", cfg)
             results.append(f"{m} (`{m.id}`) → {outcome}")
 
-    embed = discord.Embed(
-        title="🚨 RAID DETECTED — server locked down first, initiator banned",
-        description=(
-            f"**{len(recent_members)} joins** in "
-            f"**{cfg['join_threshold_seconds']}s** (threshold: {cfg['join_threshold_count']}).\n"
-            f"1️⃣ Locked **{locked}** channel(s), deleted invites, raised verification.\n"
-            f"2️⃣ Initiator: **{initiator_line}**\n"
-            f"   _Why: {why}_\n"
-            f"3️⃣ Followers: action `{action}`."
-        ),
-        color=discord.Color.red(),
-        timestamp=datetime.now(timezone.utc),
-    )
+    embed = ui.embed(
+        "🚨 RAID DETECTED — server locked down first, initiator banned",
+        (f"**{len(recent_members)} joins** in "
+         f"**{cfg['join_threshold_seconds']}s** (threshold: {cfg['join_threshold_count']}).\n"
+         f"1️⃣ Locked **{locked}** channel(s), deleted invites, raised verification.\n"
+         f"2️⃣ Initiator: **{initiator_line}**\n"
+         f"   _Why: {why}_\n"
+         f"3️⃣ Followers: action `{action}`."),
+        "error", footer="Wigglesworth • security")
     if results:
         embed.add_field(name="Actions (in order)", value="\n".join(results[:20]), inline=False)
     embed.add_field(
@@ -612,6 +666,11 @@ async def trigger_raid(guild: discord.Guild, cfg: dict, recent_members: list[dis
 @bot.event
 async def on_ready() -> None:
     print(f"Logged in as {bot.user} — watching {len(bot.guilds)} guild(s).")
+    try:  # friendly default presence (`.status` can override it live)
+        await bot.change_presence(
+            activity=discord.CustomActivity(name=f"{PREFIX}help · Wigglesworth"))
+    except (discord.HTTPException, discord.InvalidArgument):
+        pass
     import sys as _sys
     security.setup(_sys.modules[__name__])  # idempotent; registers security listeners
     community.setup(_sys.modules[__name__])  # idempotent; commands, views, scheduler
@@ -730,13 +789,19 @@ async def on_member_join(member: discord.Member) -> None:
     wchan = guild.get_channel(cfg.get("welcome_channel_id") or 0)
     if wchan:
         try:
-            embed = E(f"👋 Welcome, {member.display_name}!",
-                      f"{member.mention} joined **{guild.name}** — you're member "
-                      f"**#{len([m for m in guild.members if not m.bot])}**!\n"
-                      f"Head to #verify if you can't see channels.",
-                      kind="good")
+            human_count = len([m for m in guild.members if not m.bot])
+            embed = E(f"👋 Welcome, {member.display_name}!", kind="success")
+            embed.description = (f"{member.mention} just joined **{guild.name}** — "
+                                 f"you're member **#{human_count}**. Great to have you here!")
+            embed.add_field(name="🚀 Start here",
+                            value="Say hi in chat · check `.rank` for XP · `.help` for commands",
+                            inline=False)
+            embed.add_field(name="🔐 Can't see channels?",
+                            value="Go to #verify and hit **✅ Verify** (or type `.verify`).",
+                            inline=False)
             if member.display_avatar:
                 embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text=f"{ui.FOOTER} • welcome")
             await wchan.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
             pass
@@ -783,8 +848,11 @@ async def on_message(message: discord.Message) -> None:
     if not bot_enabled:
         await bot.process_commands(message)  # only .enable gets through (global check)
         return
-    if isinstance(message.author, discord.Member) and not is_whitelisted(
-            message.author, get_config(message.guild.id)):
+    cfg = get_config(message.guild.id)
+    # message statistics — every real, non-bot guild message counts
+    # (edits never re-count: this listener only fires for new messages)
+    stats.record(message.guild.id, message.author.id)
+    if isinstance(message.author, discord.Member) and not is_whitelisted(message.author, cfg):
         if await automod_check(message):
             await bot.process_commands(message)
             return  # deleted + handled, no XP
@@ -792,12 +860,12 @@ async def on_message(message: discord.Message) -> None:
         await bot.process_commands(message)
         return  # no XP farming during lockdown
     if bot.user and bot.user.mentioned_in(message):
-        if get_config(message.guild.id).get("chat_enabled", True):
+        if cfg.get("chat_enabled", True):
             await chat_reply(message)
     content = (message.content or "")
     if not content.startswith(PREFIX):
         await help_responder(message)
-        if get_config(message.guild.id).get("chat_enabled", True):
+        if cfg.get("chat_enabled", True):
             await teach_responder(message)
             await autoreact(message)
     # AFK: author back? mentioned someone AFK?
@@ -824,15 +892,15 @@ async def on_message(message: discord.Message) -> None:
                 except (discord.Forbidden, discord.HTTPException):
                     pass
                 break  # one notice per message
-    xp, level, leveled = award_xp(message.guild.id, message.author.id)
-    if leveled:
-        try:
-            await message.channel.send(
-                f"🎉 {message.author.mention} leveled up to **level {level}** ({xp} XP)!"
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-    if content.startswith(PREFIX):
+    # --- XP: only genuine conversation earns it -------------------------------
+    _, _, _, min_len = xp_settings(cfg)
+    is_command = content.startswith(PREFIX)
+    if (len(content.strip()) >= min_len
+            and not (cfg.get("xp_ignore_commands", True) and is_command)):
+        xp, level, leveled = award_xp(message.guild.id, message.author.id, cfg)
+        if leveled:
+            await send_levelup(message, cfg, level, xp)
+    if is_command:
         try:
             if await community.try_custom(message, content):
                 return
@@ -1547,14 +1615,17 @@ async def autoreact(message: discord.Message) -> None:
 async def cmd_teach(ctx: commands.Context, *, text: str = "") -> None:
     """Teach an auto-reply. Usage: .teach <trigger> :: <reply>"""
     if "::" not in text:
-        await ctx.send(f"Usage: `{PREFIX}teach <trigger> :: <reply>`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}teach <trigger> :: <reply>`\n"
+                                     "I'll reply whenever someone says the trigger.",
+                                     "Teach an auto-reply"))
         return
     trig, reply = [s.strip() for s in text.split("::", 1)]
     if not trig or not reply:
         return
     teach_data.setdefault(str(ctx.guild.id), {})[trig.lower()] = reply[:500]
     _save_json(TEACH_FILE, teach_data)
-    await ctx.send(f"✅ When someone says **{trig}**, I'll reply.")
+    await ctx.send(embed=ui.ok(f"Trigger **{trig}** is live — I'll answer whenever it's said.",
+                               "Auto-reply taught"))
 
 
 @bot.command(name="unteach")
@@ -1562,13 +1633,16 @@ async def cmd_teach(ctx: commands.Context, *, text: str = "") -> None:
 async def cmd_unteach(ctx: commands.Context, *, trigger: str = "") -> None:
     teach_data.get(str(ctx.guild.id), {}).pop(trigger.lower().strip(), None)
     _save_json(TEACH_FILE, teach_data)
-    await ctx.send("✅ Forgotten.")
+    await ctx.send(embed=ui.ok("That trigger is forgotten.", "Auto-reply removed"))
 
 
 @bot.command(name="triggers")
 async def cmd_triggers(ctx: commands.Context) -> None:
     trigs = list(teach_data.get(str(ctx.guild.id), {}))
-    await ctx.send("Taught triggers: " + (", ".join(f"`{t}`" for t in trigs) or "none yet"))
+    body = ("\n".join(f"• `{t}`" for t in trigs[:30])
+            or f"None yet — add one with `{PREFIX}teach <trigger> :: <reply>`.")
+    await ctx.send(embed=ui.embed("💡 Taught triggers", body, "info",
+                                  footer=f"{ui.FOOTER} • {len(trigs)} trigger(s)"))
 
 
 @bot.command(name="mood")
@@ -1577,10 +1651,13 @@ async def cmd_mood(ctx: commands.Context, mood: str = "") -> None:
     """Bot personality. Usage: .mood <chill|savage|formal|hype>"""
     mood = mood.lower().strip()
     if mood not in MOODS:
-        await ctx.send(f"Moods: {', '.join(MOODS)} (current: `{get_config(ctx.guild.id).get('bot_mood', 'chill')}`)")
+        await ctx.send(embed=ui.info(
+            f"Available moods: {', '.join(f'`{m}`' for m in MOODS)}\n"
+            f"Current: **{get_config(ctx.guild.id).get('bot_mood', 'chill')}**",
+            "Bot personality"))
         return
     update_config(ctx.guild.id, bot_mood=mood)
-    await ctx.send(f"✅ Mood: **{mood}**")
+    await ctx.send(embed=ui.ok(f"Bot mood set to **{mood}**.", "Personality updated"))
 
 
 class TriviaView(discord.ui.View):
@@ -1606,7 +1683,8 @@ class TriviaButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         if self.parent.winner is not None:
             try:
-                await interaction.response.send_message("Too slow — answered!", ephemeral=True)
+                await interaction.response.send_message(
+                    embed=ui.warn("Too slow — answered!", "Trivia"), ephemeral=True)
             except (discord.Forbidden, discord.HTTPException):
                 pass
             return
@@ -1614,19 +1692,40 @@ class TriviaButton(discord.ui.Button):
             self.parent.winner = interaction.user.id
             for c in self.parent.children:
                 c.disabled = True
-            try:
-                await interaction.response.edit_message(view=self.parent)
-                await interaction.followup.send(
-                    f"✅ {interaction.user.mention} got it! +50 XP")
-            except (discord.Forbidden, discord.HTTPException):
-                pass
             g = xp_data.setdefault(str(interaction.guild.id), {})
             e = g.setdefault(str(interaction.user.id), {"xp": 0, "last": 0})
+            old_level = xp_level(int(e["xp"]))
             e["xp"] = int(e["xp"]) + 50
             _save_xp(xp_data)
+            new_level = xp_level(int(e["xp"]))
+            try:
+                await interaction.response.edit_message(view=self.parent)
+                prize = ui.embed("🧠  Correct!", kind="gold",
+                                 footer=f"{ui.FOOTER} • trivia")
+                prize.description = (f"{interaction.user.mention} got it first — **+50 XP**!\n"
+                                     f"Now at **Level {new_level}** ({ui.fmt(e['xp'])} XP).")
+                await interaction.followup.send(embed=prize)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            if new_level > old_level:
+                base, nxt = xp_for_level(new_level), xp_for_level(new_level + 1)
+                lvl_em = ui.levelup_embed(
+                    name=interaction.user.display_name,
+                    avatar=interaction.user.display_avatar.url
+                    if getattr(interaction.user, "display_avatar", None) else None,
+                    level=new_level, xp=int(e["xp"]), base=base, nxt=nxt,
+                    guild_name=interaction.guild.name,
+                )
+                try:
+                    await interaction.followup.send(content=interaction.user.mention,
+                                                    embed=lvl_em,
+                                                    allowed_mentions=discord.AllowedMentions(users=True))
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
         else:
             try:
-                await interaction.response.send_message("❌ Nope!", ephemeral=True)
+                await interaction.response.send_message(embed=ui.err("Nope!", "Trivia"),
+                                                        ephemeral=True)
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
@@ -1636,14 +1735,17 @@ class TriviaButton(discord.ui.Button):
 async def cmd_chatoff(ctx: commands.Context) -> None:
     """Mute the chatting bot (pings, taught replies, reacts). Games/commands still work."""
     update_config(ctx.guild.id, chat_enabled=False)
-    await ctx.send("🔇 Chatbot off — pings get silence. `.chaton` to wake it.")
+    await ctx.send(embed=ui.embed("🔇 Chatbot off",
+                                  f"Pings get silence and taught replies stop. "
+                                  f"Use `{PREFIX}chaton` to wake me back up.",
+                                  "muted", footer=ui.FOOTER))
 
 
 @bot.command(name="chaton")
 @owner_or_admin()
 async def cmd_chaton(ctx: commands.Context) -> None:
     update_config(ctx.guild.id, chat_enabled=True)
-    await ctx.send("🔊 Chatbot on!")
+    await ctx.send(embed=ui.ok("Mentions and taught replies are live again.", "Chatbot on"))
 
 
 @bot.command(name="trivia")
@@ -1651,11 +1753,10 @@ async def cmd_trivia(ctx: commands.Context) -> None:
     """Trivia duel, fastest finger wins +50 XP. Usage: .trivia"""
     q, opts, ci = random.choice(TRIVIA_POOL)
     view = TriviaView(ci)
-    embed = discord.Embed(title="🧠 Trivia — fastest wins!", description=f"**{q}**",
-                          color=discord.Color.gold())
+    embed = ui.embed("🧠  Trivia — fastest finger wins!", f"**{q}**", kind="gold",
+                     footer=f"{ui.FOOTER} • trivia · +50 XP for the winner")
     for i, opt in enumerate(opts):
-        embed.add_field(name="ABCD"[i], value=opt, inline=True)
-    embed.set_footer(text="Fastest finger wins · +50 XP")
+        embed.add_field(name=f"{'ABCD'[i]}", value=opt, inline=True)
     try:
         await ctx.send(embed=embed, view=view)
     except (discord.Forbidden, discord.HTTPException):
@@ -1668,7 +1769,10 @@ async def cmd_story(ctx: commands.Context, *, line: str = "") -> None:
     key = str(ctx.channel.id)
     story = story_data.setdefault(key, [])
     if not line:
-        await ctx.send("📖 So far:\n" + sanitize_mentions("\n".join(f"> {l}" for l in story[-10:]) or "_Empty — start it!_"),
+        body = sanitize_mentions("\n".join(f"> {l}" for l in story[-10:]) or "_Empty — start it!_")
+        await ctx.send(embed=ui.embed("📖 The story so far", body, "brand",
+                                      footer=f"{ui.FOOTER} • add the next line with "
+                                             f"`.story <text>`"),
                        allowed_mentions=discord.AllowedMentions.none())
         return
     story.append(f"{ctx.author.display_name}: {sanitize_mentions(line[:200])}")
@@ -1704,7 +1808,9 @@ async def cmd_confess(ctx: commands.Context, *, text: str = "") -> None:
         except (discord.Forbidden, discord.HTTPException):
             pass
         try:
-            await ctx.send(f"{ctx.author.mention} confessions can't ping everyone/here/roles.",
+            await ctx.send(embed=ui.warn("Confessions can't ping everyone/here/roles. "
+                                         "Staff can use `.say` for announcements.",
+                                         "Mass ping blocked"),
                            delete_after=8)
             await send_log(ctx.guild, f"🚫 {ctx.author} (`{ctx.author.id}`) tried mass ping via .confess.",
                            event="automod")
@@ -1716,10 +1822,9 @@ async def cmd_confess(ctx: commands.Context, *, text: str = "") -> None:
     except (discord.Forbidden, discord.HTTPException):
         pass
     try:
-        em = discord.Embed(title="📮 Anonymous confession",
-                           description=sanitize_mentions(text[:1500]),
-                           color=discord.Color.blurple())
-        em.set_footer(text="Wigglesworth · anonymous")
+        em = ui.embed("📮  Anonymous Confession", kind="brand",
+                      footer=f"{ui.FOOTER} • anonymous — nobody knows who sent this")
+        em.description = sanitize_mentions(text[:1500])
         await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
         pass
@@ -1734,7 +1839,8 @@ async def cmd_catchup(ctx: commands.Context) -> None:
         return
     msgs = [m for m in msgs if not m.author.bot and m.content]
     if not msgs:
-        await ctx.send("Nothing to catch up on.")
+        await ctx.send(embed=ui.info("Nothing to catch up on in this channel yet.",
+                                     "All quiet"))
         return
     if AI_API_KEY:
         try:
@@ -1745,20 +1851,21 @@ async def cmd_catchup(ctx: commands.Context) -> None:
         except Exception:
             summary = None
         if summary:
-            em = discord.Embed(title="📰 Catchup", description=sanitize_mentions(summary),
-                               color=discord.Color.blurple())
-            em.set_footer(text="Wigglesworth")
+            em = ui.embed("📰  Catchup", sanitize_mentions(summary), kind="info",
+                          footer=f"{ui.FOOTER} • AI summary")
             await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
             return
     from collections import Counter
     talkers = Counter(m.author.display_name for m in msgs).most_common(5)
     words = Counter(w.lower() for m in msgs for w in m.content.split()
                     if len(w) > 4 and w.isalpha()).most_common(5)
-    em = discord.Embed(title="📰 Catchup (last 50)", color=discord.Color.blurple())
-    em.add_field(name="Talkers", value=", ".join(f"{n} ({c})" for n, c in talkers) or "—", inline=False)
+    em = ui.embed("📰  Catchup (last 50 messages)", kind="info",
+                  footer=f"{ui.FOOTER} • channel activity")
+    em.add_field(name="🗣️ Talkers",
+                 value=", ".join(f"**{n}** ({c})" for n, c in talkers) or "—",
+                 inline=False)
     if words:
-        em.add_field(name="Hot words", value=", ".join(w for w, _ in words), inline=False)
-    em.set_footer(text="Wigglesworth")
+        em.add_field(name="🔥 Hot words", value=", ".join(w for w, _ in words), inline=False)
     await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -1766,7 +1873,8 @@ async def cmd_catchup(ctx: commands.Context) -> None:
 async def cmd_tr(ctx: commands.Context, lang: str = "", *, text: str = "") -> None:
     """Translate. Usage: .tr <es|fr|de...> <text>"""
     if not lang or not text:
-        await ctx.send(f"Usage: `{PREFIX}tr <lang> <text>` (e.g. `.tr es hello`)")
+        await ctx.send(embed=ui.info(f"`{PREFIX}tr <lang> <text>` — for example `{PREFIX}tr es hello`.",
+                                     "Translate"))
         return
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as sess:
@@ -1776,10 +1884,12 @@ async def cmd_tr(ctx: commands.Context, lang: str = "", *, text: str = "") -> No
                 out = (data.get("responseData") or {}).get("translatedText", "").strip()
                 if not out:
                     raise ValueError
-                await ctx.send(f"🌍 `{lang}`: {sanitize_mentions(out[:1500])}",
+                await ctx.send(embed=ui.embed(f"🌍 Translation → `{lang}`",
+                                              sanitize_mentions(out[:1500]), "info",
+                                              footer=f"{ui.FOOTER} • translated"),
                                allowed_mentions=discord.AllowedMentions.none())
     except Exception:
-        await ctx.send("❌ Translate hiccup — try again later.")
+        await ctx.send(embed=ui.err("The translator hiccuped — try again in a moment."))
 
 
 def _qotd_time():
@@ -1798,7 +1908,8 @@ async def qotd_loop() -> None:
         if not ch:
             continue
         try:
-            await ch.send(f"❓ **Question of the day:**\n{random.choice(QOTD_POOL)}")
+            await ch.send(embed=ui.embed("❓ Question of the Day", random.choice(QOTD_POOL),
+                                         "brand", footer=f"{ui.FOOTER} • daily at 12:00 UTC"))
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -1809,7 +1920,7 @@ async def cmd_setqotd(ctx: commands.Context, channel: str = "") -> None:
     """Daily question. Usage: .setqotd #channel | .setqotd off (12:00 UTC)"""
     if channel.strip().lower() in ("off", "none", "clear"):
         update_config(ctx.guild.id, qotd_channel_id=None)
-        await ctx.send("QOTD off.")
+        await ctx.send(embed=ui.ok("The daily question is off.", "QOTD disabled"))
         return
     target = ctx.channel
     if channel:
@@ -1818,12 +1929,14 @@ async def cmd_setqotd(ctx: commands.Context, channel: str = "") -> None:
             if c:
                 target = c
         except ValueError:
-            await ctx.send(f"Usage: `{PREFIX}setqotd #channel` or `{PREFIX}setqotd off`")
+            await ctx.send(embed=ui.info(f"`{PREFIX}setqotd #channel` or `{PREFIX}setqotd off`",
+                                         "QOTD setup"))
             return
     update_config(ctx.guild.id, qotd_channel_id=target.id)
     if not qotd_loop.is_running():
         qotd_loop.start()
-    await ctx.send(f"✅ Daily question goes to {target.mention} at 12:00 UTC.")
+    await ctx.send(embed=ui.ok(f"Daily question goes to {target.mention} at **12:00 UTC**.",
+                               "QOTD enabled"))
 
 
 # ---------- automod (links/invites/mention spam) ----------
@@ -1838,9 +1951,9 @@ HELP_COOLDOWN_S = 300
 def help_text(guild_name: str) -> str:
     return (
         f"👋 Need a hand in **{guild_name}**?\n"
-        "• **Can't see channels?** Go to #verify (or type `.verify`) and hit ✅ Verify.\n"
-        "• **Bot stuff:** `.rank` for level, `.raidstatus` for guard status.\n"
-        "• **Still stuck?** Ping a mod — or type `.helpme` to see this again."
+        f"• **Can't see channels?** Go to #verify (or type `{PREFIX}verify`) and hit ✅ Verify.\n"
+        f"• **Levels & XP:** `{PREFIX}rank` · `{PREFIX}leaderboard` · `{PREFIX}messages` · `{PREFIX}xp`\n"
+        f"• **Everything else:** `{PREFIX}help` — or type `{PREFIX}helpme` to see this again."
     )
 
 
@@ -1950,8 +2063,9 @@ async def automod_check(message: discord.Message) -> bool:
         t for t in strikes if now - t < AUTOMOD_STRIKE_WINDOW_S]
     n = len(automod_strikes[message.guild.id][message.author.id])
     try:
-        warn = await message.channel.send(
-            f"⚠️ {message.author.mention} {reason} (strike {n}/{AUTOMOD_STRIKES_TO_MUTE}).")
+        warn = await message.channel.send(embed=ui.warn(
+            f"{message.author.mention} {reason} (strike **{n}/{AUTOMOD_STRIKES_TO_MUTE}**).",
+            "Automod"))
         await asyncio.sleep(6)
         try:
             await warn.delete()
@@ -1964,9 +2078,11 @@ async def automod_check(message: discord.Message) -> bool:
         try:
             await message.author.timeout(timedelta(minutes=int(cfg.get("timeout_duration_minutes", 10))),
                                          reason="Automod: 3 strikes")
-            await send_log(message.guild,
-                           f"🔇 {message.author} (`{message.author.id}`) auto-muted: 3 automod strikes.",
-                           event="mute")
+            await send_log(message.guild, "", event="mute", embed=ui.embed(
+                "🔇 Automod mute",
+                f"**{message.author.display_name}** (`{message.author.id}`) — timed out after "
+                f"**3 automod strikes**.",
+                "warning", footer=f"{ui.FOOTER} • moderation"))
             try:
                 community.open_case(message.guild.id, message.author.id,
                                     getattr(message.author, "display_name", str(message.author)),
@@ -1986,8 +2102,13 @@ async def automod_check(message: discord.Message) -> bool:
 async def cmd_lockdown(ctx: commands.Context, *, reason: str = "manual lockdown") -> None:
     raid_active[ctx.guild.id] = True
     n = await lockdown_guild(ctx.guild, reason=f"manual by {ctx.author}: {reason}")
-    await ctx.send(f"🔒 Locked **{n}** channel(s). Reason: {reason}")
-    await send_log(ctx.guild, f"🔒 Manual lockdown by {ctx.author.mention}: {sanitize_mentions(reason)}", event="lockdown")
+    await ctx.send(embed=ui.warn(f"Locked **{n}** channel(s).\n"
+                                 f"**Reason:** {sanitize_mentions(reason[:200])}",
+                                 "🔒 Lockdown active"))
+    await send_log(ctx.guild, "", event="lockdown", embed=ui.embed(
+        "🔒 Manual lockdown",
+        f"By {ctx.author.mention}: {sanitize_mentions(reason[:1000])}",
+        "warning", footer=f"{ui.FOOTER} • raid"))
 
 
 @bot.command(name="unlock")
@@ -1998,8 +2119,11 @@ async def cmd_unlock(ctx: commands.Context) -> None:
     if task and not task.done():
         task.cancel()
     n = await unlock_guild(ctx.guild, reason=f"manual by {ctx.author}")
-    await ctx.send(f"🔓 Unlocked **{n}** channel(s). Raid mode OFF.")
-    await send_log(ctx.guild, f"🔓 Manual unlock by {ctx.author.mention}.", event="unlock")
+    await ctx.send(embed=ui.ok(f"Unlocked **{n}** channel(s) — raid mode is off.",
+                               "Server unlocked"))
+    await send_log(ctx.guild, "", event="unlock", embed=ui.embed(
+        "🔓 Unlocked", f"By {ctx.author.mention}. Raid mode **OFF**.", "success",
+        footer=f"{ui.FOOTER} • raid"))
 
 
 @bot.command(name="raidmode")
@@ -2009,89 +2133,242 @@ async def cmd_raidmode(ctx: commands.Context, state: str = "") -> None:
     if state == "on":
         raid_active[ctx.guild.id] = True
         await lockdown_guild(ctx.guild, reason=f"manual raidmode by {ctx.author}")
-        await ctx.send("🚨 Raid mode **ON** — server locked.")
+        await ctx.send(embed=ui.warn("The server is locked down — members can't post "
+                                     "until an admin unlocks it.", "🚨 Raid mode ON"))
     elif state == "off":
         raid_active[ctx.guild.id] = False
         await unlock_guild(ctx.guild, reason=f"manual raidmode off by {ctx.author}")
-        await ctx.send("✅ Raid mode **OFF** — server unlocked.")
+        await ctx.send(embed=ui.ok("Channels reopened — everything is back to normal.",
+                                   "✅ Raid mode OFF"))
     else:
         active = raid_active.get(ctx.guild.id, False)
-        await ctx.send(f"Raid mode is currently **{'ON' if active else 'OFF'}**.")
+        await ctx.send(embed=ui.embed("🛡️ Raid mode",
+                                      f"Currently **{'ON — server locked' if active else 'OFF — all clear'}**.",
+                                      "error" if active else "success", footer=ui.FOOTER))
 
 
 @bot.command(name="raidstatus")
 async def cmd_status(ctx: commands.Context) -> None:
+    """Anti-raid guard status. Usage: .raidstatus"""
     cfg = get_config(ctx.guild.id)
     dq = join_times.get(ctx.guild.id, deque())
-    embed = discord.Embed(title="🛡️ Anti-raid status", color=discord.Color.blurple())
-    embed.add_field(name="Raid mode", value="ON 🔴" if raid_active.get(ctx.guild.id) else "OFF 🟢")
-    embed.add_field(name="Joins in window", value=f"{len(dq)}/{cfg['join_threshold_count']} per {cfg['join_threshold_seconds']}s")
-    embed.add_field(name="Action", value=cfg["raid_action"], inline=True)
-    embed.add_field(name="New-account flag", value=f"< {cfg['new_account_age_days']} days", inline=True)
-    embed.add_field(name="Auto-unlock", value=f"{cfg['lockdown_duration_minutes']} min (0 = manual)", inline=True)
-    embed.set_footer(text="Wigglesworth guard")
-    await ctx.send(embed=embed)
+    active = raid_active.get(ctx.guild.id, False)
+    em = ui.embed("🛡️  Anti-Raid Status", kind="brand",
+                  footer=f"{ui.FOOTER} • guard")
+    em.description = ("> 🔴 **RAID MODE ACTIVE** — server locked down" if active
+                      else "> 🟢 **Standing guard** — all clear")
+    em.add_field(name="Burst detector",
+                 value=f"**{len(dq)}** / {cfg['join_threshold_count']} joins "
+                       f"per {cfg['join_threshold_seconds']}s",
+                 inline=True)
+    em.add_field(name="Follower action", value=f"`{cfg['raid_action']}`", inline=True)
+    em.add_field(name="New-account flag",
+                 value=f"< **{cfg['new_account_age_days']} days**", inline=True)
+    em.add_field(name="Auto-unlock",
+                 value=(f"**{cfg['lockdown_duration_minutes']} min**"
+                        if cfg['lockdown_duration_minutes'] else "manual `.unlock`"),
+                 inline=True)
+    em.add_field(name="Initiator", value="always banned 👑", inline=True)
+    em.add_field(name="Whitelist",
+                 value=(f"{len(cfg.get('whitelisted_user_ids') or [])} user(s) · "
+                        f"{len(cfg.get('whitelisted_role_ids') or [])} role(s)"),
+                 inline=True)
+    await ctx.send(embed=em)
 
 
-@bot.command(name="rank")
+@bot.command(name="rank", aliases=["lvl", "card"])
 async def cmd_rank(ctx: commands.Context, member: discord.Member | None = None) -> None:
-    """Show XP level. Usage: .rank [@user]"""
-    target = member or ctx.author
-    entry = xp_data.get(str(ctx.guild.id), {}).get(str(target.id), {"xp": 0})
-    xp = int(entry["xp"])
-    level = xp_level(xp)
-    nxt = xp_for_level(level + 1)
-    # guild rank
-    board = sorted(
-        xp_data.get(str(ctx.guild.id), {}).items(), key=lambda kv: int(kv[1]["xp"]), reverse=True
-    )
-    rank = next((i + 1 for i, (uid, _) in enumerate(board) if uid == str(target.id)), len(board) or 1)
-    bar_len = 10
-    filled = int(bar_len * (xp - xp_for_level(level)) / max(nxt - xp_for_level(level), 1))
-    bar = "█" * filled + "░" * (bar_len - filled)
-    embed = discord.Embed(title=f"🏆 {target.display_name} — level {level}", color=discord.Color.gold())
-    embed.add_field(name="XP", value=f"{xp} / {nxt}", inline=True)
-    embed.add_field(name="Rank", value=f"#{rank}", inline=True)
-    embed.add_field(name="Progress", value=f"`{bar}` {xp - xp_for_level(level)}/{nxt - xp_for_level(level)} to Lvl {level + 1}", inline=False)
-    if target.display_avatar:
-        embed.set_thumbnail(url=target.display_avatar.url)
-    embed.set_footer(text="Wigglesworth XP")
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="leaderboard", aliases=["lb"])
-async def cmd_lb(ctx: commands.Context) -> None:
-    """Top 10 by XP, with medals, progress bars, and your rank."""
-    full = sorted(
-        xp_data.get(str(ctx.guild.id), {}).items(), key=lambda kv: int(kv[1]["xp"]), reverse=True
-    )
-    if not full:
-        await ctx.send("No XP yet — chat to earn some (5–15 XP/min).")
+    """Your profile & progress card. Usage: .rank [@user]"""
+    if ctx.guild is None:
         return
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines = []
-    for i, (uid, e) in enumerate(full[:10], 1):
-        xp = int(e["xp"])
-        lvl = xp_level(xp)
-        base = xp_for_level(lvl)
-        nxt = xp_for_level(lvl + 1)
-        filled = int(8 * (xp - base) / max(nxt - base, 1))
-        bar = "█" * filled + "░" * (8 - filled)
-        m = ctx.guild.get_member(int(uid))
-        name = sanitize_mentions(m.display_name) if m else f"Left user ({uid})"
-        marker = medals.get(i, f"`{i:>2}.`")
-        you = " ⬅️ you" if uid == str(ctx.author.id) else ""
-        lines.append(f"{marker} **{name}** — Lvl {lvl} · **{xp}** XP{you}\n`{bar}` {xp - base}/{nxt - base} to Lvl {lvl + 1}")
-    me_rank = next((i + 1 for i, (uid, _) in enumerate(full) if uid == str(ctx.author.id)), None)
-    me_xp = int(dict(full).get(str(ctx.author.id), {"xp": 0})["xp"])
-    total_xp = sum(int(e["xp"]) for _, e in full)
-    em = discord.Embed(title="🏆 Server Leaderboard", description="\n".join(lines)[:4000],
-                       color=discord.Color.gold())
-    if ctx.guild.icon:
-        em.set_thumbnail(url=ctx.guild.icon.url)
-    em.set_footer(text=f"You: #{me_rank} · Lvl {xp_level(me_xp)} ({me_xp} XP)"
-                       f"  •  {len(full)} earners  •  {total_xp} total XP")
+    target = member or ctx.author
+    entry = xp_data.get(str(ctx.guild.id), {}).get(str(target.id))
+    xp = int(entry["xp"]) if entry else 0
+    level = xp_level(xp)
+    base, nxt = xp_for_level(level), xp_for_level(level + 1)
+    rank, tracked = xp_rank(ctx.guild.id, target.id)
+    messages = stats.user_stats(ctx.guild.id, target.id)["total"] or None
+    em = ui.rank_embed(
+        name=target.display_name,
+        avatar=target.display_avatar.url if target.display_avatar else None,
+        level=level, xp=xp, base=base, nxt=nxt,
+        rank=rank, tracked=tracked, guild_name=ctx.guild.name,
+        messages=messages,
+    )
     await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.command(name="leaderboard", aliases=["lb", "top"])
+async def cmd_lb(ctx: commands.Context) -> None:
+    """Server leaderboard — podium top 3 + everyone below. Usage: .leaderboard"""
+    if ctx.guild is None:
+        return
+    board = xp_board(ctx.guild.id)
+    if not board:
+        await ctx.send(embed=ui.embed(
+            "🏆  Server Leaderboard",
+            "No XP on the board yet — be the first!\n"
+            f"Chat naturally to earn **{XP_MIN}–{XP_MAX} XP** per message "
+            "(once per minute).",
+            kind="gold", footer=f"{ui.FOOTER} • {ctx.guild.name}"))
+        return
+    total_xp = sum(xp for _, xp in board)
+
+    def make_row(uid: str, rank: int | None = None) -> dict:
+        row_xp = next((v for u, v in board if u == uid), 0)
+        lvl = xp_level(row_xp)
+        mem = ctx.guild.get_member(int(uid))
+        name = sanitize_mentions(mem.display_name) if mem else "departed member"
+        data = {"name": name, "level": lvl, "xp": row_xp,
+                "base": xp_for_level(lvl), "nxt": xp_for_level(lvl + 1),
+                "is_you": uid == str(ctx.author.id)}
+        if rank is not None:
+            data["rank"] = rank
+        return data
+
+    top = [make_row(uid) for uid, _ in board[:3]]
+    others = [make_row(uid, i) for i, (uid, _) in enumerate(board[3:10], start=4)]
+    me_rank = next((i for i, (uid, _) in enumerate(board, start=1)
+                    if uid == str(ctx.author.id)), None)
+    you = make_row(str(ctx.author.id), me_rank) if me_rank and me_rank > 10 else None
+    champion = ctx.guild.get_member(int(board[0][0])) if board else None
+    em = ui.leaderboard_embed(
+        guild_name=ctx.guild.name,
+        guild_icon=ctx.guild.icon.url if ctx.guild.icon else None,
+        champion_avatar=champion.display_avatar.url if champion and champion.display_avatar else None,
+        top=top, others=others, you=you,
+        total_xp=total_xp, tracked=len(board),
+    )
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.command(name="messages", aliases=["msgs", "msgstats"])
+async def cmd_messages(ctx: commands.Context, member: discord.Member | None = None) -> None:
+    """Your message statistics. Usage: .messages [@user]"""
+    if ctx.guild is None:
+        return
+    target = member or ctx.author
+    if target.bot:
+        await ctx.send(embed=ui.warn("Bots don't chat, so there's nothing to count here.",
+                                     "No stats for bots"))
+        return
+    s = stats.user_stats(ctx.guild.id, target.id)
+    rank, tracked = stats.rank(ctx.guild.id, target.id)
+    top_total = stats.top_total(ctx.guild.id)
+    entry = xp_data.get(str(ctx.guild.id), {}).get(str(target.id))
+    xp = int(entry["xp"]) if entry else 0
+    level = xp_level(xp)
+    em = ui.messages_embed(
+        name=target.display_name,
+        avatar=target.display_avatar.url if target.display_avatar else None,
+        guild_name=ctx.guild.name,
+        total=s["total"], today=s["today"], week=s["week"], month=s["month"],
+        rank=rank, tracked=tracked, top_total=top_total,
+        since=s["first"] or None,
+        level=level, xp=xp,
+        base=xp_for_level(level), nxt=xp_for_level(level + 1),
+    )
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.command(name="xp", aliases=["xpinfo"])
+async def cmd_xpinfo(ctx: commands.Context) -> None:
+    """How XP and leveling work. Usage: .xp"""
+    cfg = get_config(ctx.guild.id) if ctx.guild else DEFAULT_GUILD_CONFIG
+    lo, hi, cooldown, min_len = xp_settings(cfg)
+    em = ui.xp_info_embed(lo=lo, hi=hi, cooldown=cooldown, min_length=min_len,
+                          commands_off=bool(cfg.get("xp_ignore_commands", True)))
+    await ctx.send(embed=em)
+
+
+@bot.command(name="xpconfig")
+@admin_only()
+async def cmd_xpconfig(ctx: commands.Context, setting: str = "", value: str = "",
+                       value2: str = "") -> None:
+    """Tune leveling. Usage: .xpconfig [cooldown 45 | range 15 25 | minlength 5 | commands on/off | channel #ch|off]"""
+    cfg = get_config(ctx.guild.id)
+    lo, hi, cooldown, min_len = xp_settings(cfg)
+    announce = cfg.get("levelup_channel_id")
+    setting = setting.lower().strip()
+
+    if not setting or setting in ("show", "view", "settings"):
+        em = ui.embed("⚙️  XP Settings", "Everything `.xp` explains, tuned for this server.",
+                      kind="xp", footer=f"{ui.FOOTER} • .xpconfig cooldown|range|minlength|commands|channel")
+        em.add_field(name="✨ XP per message", value=f"**{lo}–{hi}**", inline=True)
+        em.add_field(name="⏱️ Cooldown", value=f"**{cooldown}s**", inline=True)
+        em.add_field(name="✏️ Min length", value=f"**{min_len}** chars", inline=True)
+        em.add_field(name="🚫 Commands earn XP",
+                     value="**No**" if cfg.get("xp_ignore_commands", True) else "**Yes**",
+                     inline=True)
+        em.add_field(name="📣 Level-up channel",
+                     value=f"<#{announce}>" if announce else "current channel", inline=True)
+        await ctx.send(embed=em)
+        return
+
+    changed = ""
+    if setting == "cooldown":
+        try:
+            new = int(value)
+        except ValueError:
+            new = 0
+        if not 10 <= new <= 3600:
+            await ctx.send(embed=ui.err("Cooldown must be **10–3600 seconds**."))
+            return
+        update_config(ctx.guild.id, xp_cooldown_seconds=new)
+        changed = f"⏱️ Cooldown → **{new}s**"
+    elif setting == "range":
+        try:
+            new_lo, new_hi = int(value), int(value2)
+        except ValueError:
+            new_lo = new_hi = 0
+        if not (1 <= new_lo <= new_hi <= 500):
+            await ctx.send(embed=ui.err("Use `.xpconfig range <min> <max>` — 1 ≤ min ≤ max ≤ 500."))
+            return
+        update_config(ctx.guild.id, xp_min=new_lo, xp_max=new_hi)
+        changed = f"✨ XP per message → **{new_lo}–{new_hi}**"
+    elif setting in ("minlength", "min_length", "minchars"):
+        try:
+            new = int(value)
+        except ValueError:
+            new = 0
+        if not 1 <= new <= 200:
+            await ctx.send(embed=ui.err("Minimum length must be **1–200 characters**."))
+            return
+        update_config(ctx.guild.id, xp_min_length=new)
+        changed = f"✏️ Min length → **{new}** chars"
+    elif setting == "commands":
+        v = value.lower().strip()
+        if v not in ("on", "off", "yes", "no", "true", "false"):
+            await ctx.send(embed=ui.err("Use `.xpconfig commands on|off` — whether bot commands earn XP."))
+            return
+        ignore = v in ("off", "no", "false")
+        update_config(ctx.guild.id, xp_ignore_commands=ignore)
+        changed = ("🚫 Commands no longer earn XP — **conversations only**."
+                   if ignore else "⚠️ Commands now earn XP too (farm risk).")
+    elif setting == "channel":
+        v = value.strip()
+        if not v or v.lower() in ("off", "none", "here", "current", "clear"):
+            update_config(ctx.guild.id, levelup_channel_id=None)
+            changed = "📣 Level-ups → **current channel**."
+        else:
+            try:
+                ch = ctx.guild.get_channel(int(v.strip("<#>")))
+            except ValueError:
+                ch = None
+            if ch is None:
+                await ctx.send(embed=ui.err("Use `.xpconfig channel #channel` or `.xpconfig channel off`."))
+                return
+            update_config(ctx.guild.id, levelup_channel_id=ch.id)
+            changed = f"📣 Level-ups → {ch.mention}"
+    else:
+        await ctx.send(embed=ui.err(
+            "Use `.xpconfig` to view, or:\n"
+            "`.xpconfig cooldown <10-3600>` · `.xpconfig range <min> <max>`\n"
+            "`.xpconfig minlength <1-200>` · `.xpconfig commands on|off`\n"
+            "`.xpconfig channel #channel|off`",
+            "Unknown setting"))
+        return
+    await ctx.send(embed=ui.ok(changed, "XP Setting Updated"))
 
 
 @bot.command(name="afk")
@@ -2110,9 +2387,11 @@ async def cmd_afk(ctx: commands.Context, *, reason: str = "AFK") -> None:
 @bot.command(name="xpreset")
 @admin_only()
 async def cmd_xpreset(ctx: commands.Context, member: discord.Member) -> None:
+    """Wipe a member's XP. Usage: .xpreset @user"""
     xp_data.get(str(ctx.guild.id), {}).pop(str(member.id), None)
     _save_xp(xp_data)
-    await ctx.send(f"Reset {member.display_name}'s XP.")
+    await ctx.send(embed=ui.ok(f"{member.mention}'s XP was reset to **0** (Level 0).",
+                               "XP Reset"))
 
 
 @bot.command(name="xpadd")
@@ -2120,16 +2399,18 @@ async def cmd_xpreset(ctx: commands.Context, member: discord.Member) -> None:
 async def cmd_xpadd(ctx: commands.Context, member: discord.Member, amount: int) -> None:
     """Give XP. Usage: .xpadd @user 200"""
     if amount <= 0 or amount > 100000:
-        await ctx.send("Amount must be 1–100000.")
+        await ctx.send(embed=ui.err("Amount must be **1–100,000**."))
         return
     g = xp_data.setdefault(str(ctx.guild.id), {})
     entry = g.setdefault(str(member.id), {"xp": 0, "last": 0})
     entry["xp"] = int(entry["xp"]) + amount
     _save_xp(xp_data)
-    await ctx.send(
-        f"Added **{amount} XP** to {member.display_name} — "
-        f"now Lvl {xp_level(int(entry['xp']))} ({int(entry['xp'])} XP)."
-    )
+    lvl = xp_level(int(entry["xp"]))
+    em = ui.embed("⚡  XP Added",
+                  f"{member.mention} received **+{ui.fmt(amount)} XP**.\n"
+                  f"Now **Level {lvl}** with **{ui.fmt(entry['xp'])} XP**.",
+                  kind="xp")
+    await ctx.send(embed=em)
 
 
 @bot.command(name="xpset")
@@ -2137,14 +2418,16 @@ async def cmd_xpadd(ctx: commands.Context, member: discord.Member, amount: int) 
 async def cmd_xpset(ctx: commands.Context, member: discord.Member, amount: int) -> None:
     """Set exact XP. Usage: .xpset @user 500"""
     if amount < 0 or amount > 1000000:
-        await ctx.send("Amount must be 0–1000000.")
+        await ctx.send(embed=ui.err("Amount must be **0–1,000,000**."))
         return
     g = xp_data.setdefault(str(ctx.guild.id), {})
     g[str(member.id)] = {"xp": amount, "last": 0}
     _save_xp(xp_data)
-    await ctx.send(
-        f"Set {member.display_name} to **{amount} XP** (Lvl {xp_level(amount)})."
-    )
+    em = ui.embed("⚡  XP Set",
+                  f"{member.mention} is now **Level {xp_level(amount)}** "
+                  f"with **{ui.fmt(amount)} XP**.",
+                  kind="xp")
+    await ctx.send(embed=em)
 
 
 @bot.command(name="leveladd")
@@ -2152,17 +2435,18 @@ async def cmd_xpset(ctx: commands.Context, member: discord.Member, amount: int) 
 async def cmd_leveladd(ctx: commands.Context, member: discord.Member, amount: int) -> None:
     """Give levels. Usage: .leveladd @user 2"""
     if amount <= 0 or amount > 100:
-        await ctx.send("Amount must be 1–100.")
+        await ctx.send(embed=ui.err("Amount must be **1–100**."))
         return
     g = xp_data.setdefault(str(ctx.guild.id), {})
     entry = g.setdefault(str(member.id), {"xp": 0, "last": 0})
     new_level = xp_level(int(entry["xp"])) + amount
     entry["xp"] = xp_for_level(new_level)
     _save_xp(xp_data)
-    await ctx.send(
-        f"Added **{amount} level(s)** to {member.display_name} — "
-        f"now Lvl {new_level} ({int(entry['xp'])} XP)."
-    )
+    em = ui.embed("⚡  Levels Added",
+                  f"{member.mention} received **+{amount} level(s)** — "
+                  f"now **Level {new_level}** ({ui.fmt(entry['xp'])} XP).",
+                  kind="xp")
+    await ctx.send(embed=em)
 
 
 @bot.command(name="levelset")
@@ -2170,12 +2454,16 @@ async def cmd_leveladd(ctx: commands.Context, member: discord.Member, amount: in
 async def cmd_levelset(ctx: commands.Context, member: discord.Member, level: int) -> None:
     """Set exact level. Usage: .levelset @user 5"""
     if level < 0 or level > 100:
-        await ctx.send("Level must be 0–100.")
+        await ctx.send(embed=ui.err("Level must be **0–100**."))
         return
     g = xp_data.setdefault(str(ctx.guild.id), {})
     g[str(member.id)] = {"xp": xp_for_level(level), "last": 0}
     _save_xp(xp_data)
-    await ctx.send(f"Set {member.display_name} to **Lvl {level}** ({xp_for_level(level)} XP).")
+    em = ui.embed("⚡  Level Set",
+                  f"{member.mention} is now **Level {level}** "
+                  f"({ui.fmt(xp_for_level(level))} XP).",
+                  kind="xp")
+    await ctx.send(embed=em)
 
 
 def _try_math(text: str) -> str | None:
@@ -2225,9 +2513,13 @@ BALL8 = ["yes fr", "nah lol", "maybe idk", "definitely", "no cap yes", "cap, no"
 async def cmd_8ball(ctx: commands.Context, *, question: str = "") -> None:
     """Magic 8-ball. Usage: .8ball <question>"""
     if not question:
-        await ctx.send(f"Usage: `{PREFIX}8ball <question>`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}8ball <question>` — ask me anything.",
+                                     "Magic 8-Ball"))
         return
-    await ctx.send(f"🎱 {random.choice(BALL8)}")
+    await ctx.send(embed=ui.embed("🎱 Magic 8-Ball",
+                                  f"**{sanitize_mentions(question[:200])}**\n\n"
+                                  f"🔮 {random.choice(BALL8)}",
+                                  "brand", footer=ui.FOOTER))
 
 
 @bot.command(name="rps")
@@ -2237,17 +2529,21 @@ async def cmd_rps(ctx: commands.Context, pick: str = "") -> None:
     short = {"r": "rock", "p": "paper", "s": "scissors"}
     pick = short.get(pick, pick)
     if pick not in ("rock", "paper", "scissors"):
-        await ctx.send(f"Usage: `{PREFIX}rps <rock|paper|scissors>`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}rps <rock|paper|scissors>` — "
+                                     "`r`, `p` and `s` work too.", "Rock Paper Scissors"))
         return
     mine = random.choice(["rock", "paper", "scissors"])
     beats = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
     emo = {"rock": "🪨", "paper": "📄", "scissors": "✂️"}
     if mine == pick:
-        await ctx.send(f"{emo[mine]} vs {emo[pick]} — tie!")
+        result, kind = "It's a tie!", "info"
     elif beats[mine] == pick:
-        await ctx.send(f"{emo[mine]} vs {emo[pick]} — I win 😎")
+        result, kind = "I win 😎", "error"
     else:
-        await ctx.send(f"{emo[mine]} vs {emo[pick]} — you win, gg")
+        result, kind = "You win — gg!", "success"
+    await ctx.send(embed=ui.embed("✊✌️✋ Rock Paper Scissors",
+                                  f"**{ctx.author.display_name}** {emo[pick]} vs "
+                                  f"{emo[mine]} **Wigglesworth**\n\n→ **{result}**", kind))
 
 
 @bot.command(name="roll")
@@ -2256,14 +2552,20 @@ async def cmd_roll(ctx: commands.Context, sides: str = "100") -> None:
     try:
         n = max(2, min(1000000, int(sides)))
     except ValueError:
-        await ctx.send(f"Usage: `{PREFIX}roll [sides]`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}roll [sides]` — between 2 and 1,000,000 sides.",
+                                     "Roll a die"))
         return
-    await ctx.send(f"🎲 {ctx.author.mention} rolled **{random.randint(1, n)}** (1-{n})")
+    await ctx.send(embed=ui.embed("🎲 Roll",
+                                  f"**{ctx.author.display_name}** rolled "
+                                  f"**{random.randint(1, n)}** *(1–{n})*",
+                                  "brand", footer=ui.FOOTER))
 
 
 @bot.command(name="flip")
 async def cmd_flip(ctx: commands.Context) -> None:
-    await ctx.send(f"🪙 **{random.choice(['heads', 'tails'])}**")
+    await ctx.send(embed=ui.embed("🪙 Coin flip",
+                                  f"**{random.choice(['heads', 'tails']).title()}**!",
+                                  "gold", footer=ui.FOOTER))
 
 
 @bot.command(name="status")
@@ -2272,10 +2574,10 @@ async def cmd_statusbot(ctx: commands.Context, *, text: str = "") -> None:
     """Set the bot's status live. Usage: .status <text> | .status off"""
     if not text or text.lower() == "off":
         await bot.change_presence(activity=None)
-        await ctx.send("Status cleared.")
+        await ctx.send(embed=ui.ok("Custom status cleared.", "Status updated"))
         return
     await bot.change_presence(activity=discord.CustomActivity(name=text[:120]))
-    await ctx.send(f"Status: **{text[:120]}**")
+    await ctx.send(embed=ui.ok(f"Status is now **{text[:120]}**.", "Status updated"))
 
 
 @bot.command(name="setbio")
@@ -2283,7 +2585,8 @@ async def cmd_statusbot(ctx: commands.Context, *, text: str = "") -> None:
 async def cmd_setbio(ctx: commands.Context, *, text: str = "") -> None:
     """Set the bot's About Me bio. Usage: .setbio <text> (190 max)"""
     if not text:
-        await ctx.send(f"Usage: `{PREFIX}setbio <text>`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}setbio <text>` — 190 characters max.",
+                                     "Set bio"))
         return
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as sess:
@@ -2293,11 +2596,12 @@ async def cmd_setbio(ctx: commands.Context, *, text: str = "") -> None:
                 json={"bio": text[:190]},
             ) as r:
                 if r.status == 200:
-                    await ctx.send("Bio updated! Check the bot's profile.")
+                    await ctx.send(embed=ui.ok("Bio updated — check the bot's profile.",
+                                               "Profile updated"))
                 else:
-                    await ctx.send(f"❌ Discord said no (HTTP {r.status}).")
+                    await ctx.send(embed=ui.err(f"Discord refused the change (HTTP {r.status})."))
     except Exception as exc:
-        await ctx.send(f"❌ Failed: `{type(exc).__name__}`")
+        await ctx.send(embed=ui.err(f"Request failed: `{type(exc).__name__}`."))
 
 
 @bot.command(name="aitest")
@@ -2305,9 +2609,11 @@ async def cmd_setbio(ctx: commands.Context, *, text: str = "") -> None:
 async def cmd_aitest(ctx: commands.Context) -> None:
     """Test the Groq brain EXACTLY as chat uses it. Usage: .aitest"""
     if not AI_API_KEY:
-        await ctx.send("❌ No `OPENAI_API_KEY` in `.env` — restart after adding it.")
+        await ctx.send(embed=ui.err("No `OPENAI_API_KEY` in `.env` — restart after adding it.",
+                                    "AI not configured"))
         return
-    await ctx.send(f"🔌 Testing `{AI_MODEL}` (chat-identical payload)...")
+    await ctx.send(embed=ui.info(f"Testing `{AI_MODEL}` with the exact chat payload…",
+                                 "AI connection test"))
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as sess:
             async with sess.post(
@@ -2324,15 +2630,22 @@ async def cmd_aitest(ctx: commands.Context) -> None:
                     try:
                         ans = (_j.loads(raw)["choices"][0]["message"].get("content") or "").strip()
                     except Exception as exc:
-                        await ctx.send(f"⚠️ HTTP 200 but unparseable ({type(exc).__name__}). "
-                                       f"First 300 chars:\n```{raw[:300]}```")
+                        await ctx.send(embed=ui.warn(
+                            f"HTTP 200 but unparseable ({type(exc).__name__}).\n"
+                            f"```{raw[:300]}```", "Odd response"))
                         return
-                    await ctx.send(f"✅ Works! Reply would be:\n> {ans[:300]}"
-                                   if ans else "⚠️ HTTP 200 but EMPTY answer — fallback takes over. Retrying usually fixes it.")
+                    if ans:
+                        await ctx.send(embed=ui.ok(f"Reply would be:\n> {ans[:300]}",
+                                                   "AI works"))
+                    else:
+                        await ctx.send(embed=ui.warn(
+                            "HTTP 200 but the answer was empty — the fallback takes over. "
+                            "Retrying usually fixes it.", "Empty answer"))
                 else:
-                    await ctx.send(f"❌ Groq HTTP {resp.status}:\n```{raw[:400]}```")
+                    await ctx.send(embed=ui.err(f"Groq returned HTTP {resp.status}:\n"
+                                                f"```{raw[:400]}```"))
     except Exception as exc:
-        await ctx.send(f"❌ Request failed: `{type(exc).__name__}: {exc}`")
+        await ctx.send(embed=ui.err(f"Request failed: `{type(exc).__name__}: {exc}`"))
 
 
 class RoleMenuView(discord.ui.View):
@@ -2355,28 +2668,39 @@ class RoleToggleButton(discord.ui.Button):
         member = guild.get_member(interaction.user.id) if guild else None
         if not role or not member:
             try:
-                await interaction.response.send_message("Role's gone.", ephemeral=True)
+                await interaction.response.send_message(
+                    embed=ui.err("That role no longer exists.", "Role unavailable"),
+                    ephemeral=True)
             except (discord.Forbidden, discord.HTTPException):
                 pass
             return
         if role.permissions.administrator or role.managed:
             try:
                 await interaction.response.send_message(
-                    "🔒 Admin/managed roles can't be self-served.", ephemeral=True)
+                    embed=ui.warn("Admin and bot-managed roles can't be self-served.",
+                                  "Locked role"),
+                    ephemeral=True)
             except (discord.Forbidden, discord.HTTPException):
                 pass
             return
         try:
             if role in member.roles:
                 await member.remove_roles(role, reason="Role menu toggle")
-                await interaction.response.send_message(f"Removed **{role.name}**.", ephemeral=True)
+                box = ui.embed("🎭  Role Removed", kind="info",
+                               footer=f"{ui.FOOTER} • role menu")
+                box.description = f"**{role.name}** was removed from your roles."
             else:
                 await member.add_roles(role, reason="Role menu toggle")
-                await interaction.response.send_message(f"Added **{role.name}**!", ephemeral=True)
+                box = ui.embed("🎭  Role Added", kind="success",
+                               footer=f"{ui.FOOTER} • role menu")
+                box.description = f"You now have **{role.name}**."
+            await interaction.response.send_message(embed=box, ephemeral=True)
         except (discord.Forbidden, discord.HTTPException):
             try:
                 await interaction.response.send_message(
-                    "❌ Can't — my role must sit above that one.", ephemeral=True)
+                    embed=ui.err("I can't manage that role — my role must sit above it.",
+                                 "Missing permission"),
+                    ephemeral=True)
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
@@ -2435,18 +2759,22 @@ def gw_embed(g: dict, ended: bool = False) -> discord.Embed:
     entries = len(g.get("entrants", []))
     if ended:
         winners = g.get("winners", [])
-        if winners:
-            wline = ", ".join(f"<@{w}>" for w in winners)
-            desc = f"## {prize}\n\n🏆 Winner(s): {wline}"
-        else:
-            desc = f"## {prize}\n\n😢 No entries — nobody wins this time."
-        em = E("✅ GIVEAWAY ENDED", desc, kind="info")
-    else:
-        host = f"<@{g['host']}>" if str(g.get("host", "")).isdigit() and int(g["host"]) else "the dashboard"
-        desc = (f"## {prize}\n\n🏆 Winners: **{n}**\n👥 Entries: **{entries}**\n"
-                f"⏰ Ends: <t:{ends}:R> (<t:{ends}:F>)\n👤 Hosted by: {host}")
-        em = E("🎁 GIVEAWAY", desc, kind="win")
-    em.set_footer(text="Wigglesworth · click 🎉 to enter" if not ended else "Wigglesworth · ended")
+        em = ui.embed("🎉  Giveaway Ended", kind="success",
+                      footer=f"{ui.FOOTER} • giveaway results")
+        em.description = f"## {prize}"
+        em.add_field(name="🏆 Winner(s)",
+                     value=", ".join(f"<@{w}>" for w in winners) if winners
+                     else "*No entries — nobody wins this time.*",
+                     inline=False)
+        em.add_field(name="👥 Entries", value=f"**{entries}**", inline=True)
+        return em
+    host = f"<@{g['host']}>" if str(g.get("host", "")).isdigit() and int(g["host"]) else "the dashboard"
+    em = ui.embed("🎁  Giveaway", kind="gold", footer=f"{ui.FOOTER} • click 🎉 to enter")
+    em.description = f"## {prize}"
+    em.add_field(name="🏆 Winners", value=f"**{n}**", inline=True)
+    em.add_field(name="👥 Entries", value=f"**{entries}**", inline=True)
+    em.add_field(name="⏰ Ends", value=f"<t:{ends}:R>", inline=True)
+    em.add_field(name="👤 Hosted by", value=host, inline=True)
     return em
 
 
@@ -2467,7 +2795,9 @@ class GiveawayView(discord.ui.View):
                   and x.get("status") == "active"), None)
         if g is None:
             try:
-                await interaction.response.send_message("This giveaway already ended.", ephemeral=True)
+                await interaction.response.send_message(
+                    embed=ui.warn("This giveaway already ended.", "Giveaways"),
+                    ephemeral=True)
             except (discord.Forbidden, discord.HTTPException):
                 pass
             return
@@ -2475,17 +2805,18 @@ class GiveawayView(discord.ui.View):
         entrants = g.setdefault("entrants", [])
         if uid in entrants:
             entrants.remove(uid)
-            msg = "You left the giveaway."
+            msg, kind = "You left the giveaway.", "info"
         else:
             entrants.append(uid)
-            msg = f"You're in! Good luck 🎉 ({len(entrants)} entries)"
+            msg, kind = f"You're in! Good luck 🎉 ({len(entrants)} entries)", "success"
         _save_gw(giveaway_data)
         try:
             await interaction.message.edit(embed=gw_embed(g))
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             pass
         try:
-            await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.response.send_message(embed=ui.embed("🎁 Giveaway", msg, kind),
+                                                    ephemeral=True)
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -2610,7 +2941,7 @@ async def cmd_rolemenu(ctx: commands.Context, *args: str) -> None:
                 pass
         rr_data[str(ctx.guild.id)] = []
         _save_rr(rr_data)
-        await ctx.send("🧹 Role menus cleared.")
+        await ctx.send(embed=ui.ok("All role menus were deleted.", "Role menu cleared"))
         return
     rids = []
     for a in args:
@@ -2622,12 +2953,13 @@ async def cmd_rolemenu(ctx: commands.Context, *args: str) -> None:
                 and not r.permissions.administrator and not r.managed:
             rids.append(r.id)
     if not rids:
-        await ctx.send(f"Usage: `{PREFIX}rolemenu @role1 @role2 ...` "
-                       f"(admin/managed roles can't be self-served).")
+        await ctx.send(embed=ui.info(f"`{PREFIX}rolemenu @role1 @role2 ...`\n"
+                                     "Admin and bot-managed roles can't be self-served.",
+                                     "Role menu"))
         return
-    embed = discord.Embed(title="🎭 Pick your roles", description="Tap a button to add/remove it.",
-                          color=discord.Color.blurple())
-    embed.set_footer(text="Wigglesworth · buttons stay live after restarts")
+    embed = ui.embed("🎭  Pick Your Roles",
+                     "Tap a button to add or remove a role — changes apply instantly.",
+                     kind="brand", footer=f"{ui.FOOTER} • buttons stay live after restarts")
     view = RoleMenuView(ctx.guild.id, rids)
     for b in view.children:
         role = ctx.guild.get_role(b.role_id)
@@ -2637,12 +2969,13 @@ async def cmd_rolemenu(ctx: commands.Context, *args: str) -> None:
     try:
         msg = await ctx.send(embed=embed, view=view)
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Can't post: {exc}")
+        await ctx.send(embed=ui.err(f"I couldn't post the menu: {exc}"))
         return
     rr_data.setdefault(str(ctx.guild.id), []).append(
         {"channel": ctx.channel.id, "message": msg.id, "roles": rids})
     _save_rr(rr_data)
-    await ctx.send(f"✅ Menu live with {len(rids)} role(s). Survives restarts.")
+    await ctx.send(embed=ui.ok(f"Menu live with **{len(rids)}** role(s) — "
+                               "it survives restarts.", "Role menu posted"))
 
 
 # ---------- tickets removed ----------
@@ -2655,11 +2988,14 @@ async def cmd_config(ctx: commands.Context, key: str = "", *, value: str = "") -
     if not key:
         lines = [f"**{k}**: `{v}`" for k, v in cfg.items()
                  if k not in ("whitelisted_user_ids", "whitelisted_role_ids")]
-        await ctx.send("Current config:\n" + "\n".join(lines))
+        await ctx.send(embed=ui.embed(f"⚙️ Configuration — {ctx.guild.name}",
+                                      "\n".join(lines)[:4000], "brand",
+                                      footer=f"{ui.FOOTER} • `{PREFIX}raidconfig <key> <value>` to change"))
         return
     key = key.strip()
     if key not in DEFAULT_GUILD_CONFIG:
-        await ctx.send(f"Unknown key. Valid: {', '.join(DEFAULT_GUILD_CONFIG)}")
+        await ctx.send(embed=ui.err(f"Unknown key `{key}`.\nValid keys: "
+                                    + ", ".join(f"`{k}`" for k in DEFAULT_GUILD_CONFIG)))
         return
     # type coercion
     default = DEFAULT_GUILD_CONFIG[key]
@@ -2671,7 +3007,7 @@ async def cmd_config(ctx: commands.Context, key: str = "", *, value: str = "") -
             elif v in ("false", "off", "no", "0"):
                 parsed = False
             else:
-                await ctx.send("Use `true` or `false`.")
+                await ctx.send(embed=ui.err("Use `true` or `false`."))
                 return
         elif isinstance(default, int) and key != "log_channel_id":
             parsed: object = int(value)
@@ -2685,12 +3021,13 @@ async def cmd_config(ctx: commands.Context, key: str = "", *, value: str = "") -
         else:
             parsed = value.strip()
             if key == "raid_action" and parsed not in VALID_ACTIONS:
-                await ctx.send(f"raid_action must be one of {sorted(VALID_ACTIONS)}")
+                await ctx.send(embed=ui.err(f"`raid_action` must be one of "
+                                            f"{sorted(VALID_ACTIONS)}."))
                 return
         update_config(ctx.guild.id, **{key: parsed})
-        await ctx.send(f"✅ `{key}` set to `{parsed}`.")
+        await ctx.send(embed=ui.ok(f"`{key}` is now `{parsed}`.", "Config updated"))
     except ValueError:
-        await ctx.send("❌ Could not parse value (expected a number/ID).")
+        await ctx.send(embed=ui.err("Could not parse that value — expected a number or ID."))
 
 
 @bot.command(name="setwelcome")
@@ -2701,20 +3038,24 @@ async def cmd_setwelcome(ctx: commands.Context, channel: str = "") -> None:
         if not channel:
             cid = get_config(ctx.guild.id).get("welcome_channel_id")
             ch = ctx.guild.get_channel(cid) if cid else None
-            await ctx.send(f"Welcome channel: {ch.mention if ch else 'not set'}.")
+            await ctx.send(embed=ui.info(f"Welcome channel: {ch.mention if ch else '**not set**'}.\n"
+                                         f"Set one with `{PREFIX}setwelcome #channel`.",
+                                         "Welcome messages"))
             return
         update_config(ctx.guild.id, welcome_channel_id=None)
-        await ctx.send("Welcome messages off.")
+        await ctx.send(embed=ui.ok("Welcome messages are off.", "Welcomes disabled"))
         return
     try:
         target = ctx.guild.get_channel(int(channel.strip("<#>")))
     except ValueError:
         target = None
     if target is None:
-        await ctx.send(f"Usage: `{PREFIX}setwelcome #channel`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}setwelcome #channel` or `{PREFIX}setwelcome off`",
+                                     "Welcomes"))
         return
     update_config(ctx.guild.id, welcome_channel_id=target.id)
-    await ctx.send(f"👋 Welcomes go to {target.mention}.")
+    await ctx.send(embed=ui.ok(f"New members will be welcomed in {target.mention}.",
+                               "Welcomes enabled"))
 
 
 @bot.command(name="setgoodbye")
@@ -2725,20 +3066,24 @@ async def cmd_setgoodbye(ctx: commands.Context, channel: str = "") -> None:
         if not channel:
             cid = get_config(ctx.guild.id).get("goodbye_channel_id")
             ch = ctx.guild.get_channel(cid) if cid else None
-            await ctx.send(f"Goodbye channel: {ch.mention if ch else 'not set'}.")
+            await ctx.send(embed=ui.info(f"Goodbye channel: {ch.mention if ch else '**not set**'}.\n"
+                                         f"Set one with `{PREFIX}setgoodbye #channel`.",
+                                         "Goodbye messages"))
             return
         update_config(ctx.guild.id, goodbye_channel_id=None)
-        await ctx.send("Goodbye messages off.")
+        await ctx.send(embed=ui.ok("Goodbye messages are off.", "Goodbyes disabled"))
         return
     try:
         target = ctx.guild.get_channel(int(channel.strip("<#>")))
     except ValueError:
         target = None
     if target is None:
-        await ctx.send(f"Usage: `{PREFIX}setgoodbye #channel`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}setgoodbye #channel` or `{PREFIX}setgoodbye off`",
+                                     "Goodbyes"))
         return
     update_config(ctx.guild.id, goodbye_channel_id=target.id)
-    await ctx.send(f"👋 Goodbyes go to {target.mention}.")
+    await ctx.send(embed=ui.ok(f"Farewells will be posted in {target.mention}.",
+                               "Goodbyes enabled"))
 
 
 @bot.command(name="linkchannel")
@@ -2748,24 +3093,28 @@ async def cmd_linkchannel(ctx: commands.Context, channel: str = "") -> None:
     cfg = get_config(ctx.guild.id)
     ids = list(cfg.get("link_allowed_channels", []) or [])
     if not channel:
-        names = [f"<#{i}>" for i in ids] or ["none — links filtered everywhere"]
-        await ctx.send("Link-safe channels: " + ", ".join(names))
+        names = [f"<#{i}>" for i in ids] or ["none — links are filtered everywhere"]
+        await ctx.send(embed=ui.embed("🔗 Link-safe channels", ", ".join(names), "info",
+                                      footer=f"{ui.FOOTER} • `{PREFIX}linkchannel #channel` to toggle"))
         return
     try:
         target = ctx.guild.get_channel(int(channel.strip("<#>")))
     except ValueError:
         target = None
     if target is None or not isinstance(target, discord.TextChannel):
-        await ctx.send(f"Usage: `{PREFIX}linkchannel #channel`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}linkchannel #channel` — or run it with no "
+                                     "argument to list the current channels.",
+                                     "Link-safe channels"))
         return
     if target.id in ids:
         ids.remove(target.id)
-        msg = f"🔒 {target.mention} filters links again."
+        em = ui.ok(f"{target.mention} filters links again.", "Link safety on")
     else:
         ids.append(target.id)
-        msg = f"🔓 {target.mention} is now link-safe (invites + links allowed)."
+        em = ui.ok(f"{target.mention} is now link-safe (invites + links allowed).",
+                   "Link safety off")
     update_config(ctx.guild.id, link_allowed_channels=ids)
-    await ctx.send(msg)
+    await ctx.send(embed=em)
 
 
 @bot.command(name="setlog")
@@ -2773,7 +3122,8 @@ async def cmd_linkchannel(ctx: commands.Context, channel: str = "") -> None:
 async def cmd_setlog(ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
     target = channel or ctx.channel
     update_config(ctx.guild.id, log_channel_id=target.id)
-    await ctx.send(f"✅ Raid logs will go to {target.mention}.")
+    await ctx.send(embed=ui.ok(f"Raid and security logs will go to {target.mention}.",
+                               "Log channel set"))
 
 
 @bot.command(name="setchat")
@@ -2785,23 +3135,26 @@ async def cmd_setchat(ctx: commands.Context, channel: str = "") -> None:
         cfg = get_config(ctx.guild.id)
         cid = cfg.get("chat_channel_id")
         ch = ctx.guild.get_channel(cid) if cid else None
-        await ctx.send(f"Chat channel: {ch.mention if ch else 'anywhere'}.")
+        await ctx.send(embed=ui.info(f"Chat channel: {ch.mention if ch else '**anywhere**'}.\n"
+                                     f"Lock it down with `{PREFIX}setchat #channel` or "
+                                     f"`{PREFIX}setchat off`.", "Chatbot"))
         return
     if channel in ("off", "none", "clear", "anywhere"):
         update_config(ctx.guild.id, chat_channel_id=None)
-        await ctx.send("✅ I'll chat anywhere.")
+        await ctx.send(embed=ui.ok("The bot will chat anywhere again.", "Chatbot"))
         return
     try:
         cid = int(channel.strip("<#>"))
     except ValueError:
-        await ctx.send(f"Usage: `{PREFIX}setchat #channel` or `{PREFIX}setchat off`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}setchat #channel` or `{PREFIX}setchat off`",
+                                     "Chatbot"))
         return
     target = ctx.guild.get_channel(cid)
     if target is None:
-        await ctx.send("❌ Channel not found.")
+        await ctx.send(embed=ui.err("I can't see that channel — check the ID or my permissions."))
         return
     update_config(ctx.guild.id, chat_channel_id=target.id)
-    await ctx.send(f"✅ I'll only chat in {target.mention}.")
+    await ctx.send(embed=ui.ok(f"The bot will only chat in {target.mention}.", "Chatbot locked"))
 
 
 ABUSE_COOLDOWN_S = 300  # one abuse ping per 5 min per server
@@ -2818,7 +3171,8 @@ async def cmd_abuse(ctx: commands.Context, *, reason: str = "") -> None:
     last = abuse_cd.get(ctx.guild.id, 0)
     if now - last < ABUSE_COOLDOWN_S:
         wait = int(ABUSE_COOLDOWN_S - (now - last))
-        await ctx.send(f"🚨 Already reported — cooldown {wait}s left. Mods have been notified.")
+        await ctx.send(embed=ui.warn(f"Already reported — try again in **{wait}s**. "
+                                     "Mods have been notified.", "Cooldown"))
         return
     abuse_cd[ctx.guild.id] = now
     clean = sanitize_mentions(reason.strip()[:300])
@@ -2836,7 +3190,7 @@ async def cmd_abuse(ctx: commands.Context, *, reason: str = "") -> None:
         await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
         return
     if target.id != ctx.channel.id:
-        await ctx.send("🚨 Report sent — help is on the way.")
+        await ctx.send(embed=ui.ok("Report sent — help is on the way.", "🚨 Abuse reported"))
 
 
 @bot.command(name="setabuserole")
@@ -2845,11 +3199,12 @@ async def cmd_setabuserole(ctx: commands.Context, role: discord.Role | None = No
     """Set the role .abuse pings. Usage: .setabuserole @role"""
     if role is None:
         cur = ctx.guild.get_role(get_config(ctx.guild.id).get("abuse_role_id") or 0)
-        await ctx.send(f"Abuse role: {cur.mention if cur else 'not set'}. "
-                       f"Usage: `{PREFIX}setabuserole @role`")
+        await ctx.send(embed=ui.info(f"Abuse role: {cur.mention if cur else '**not set**'}.\n"
+                                     f"Set one with `{PREFIX}setabuserole @role`.",
+                                     "Abuse alerts"))
         return
     update_config(ctx.guild.id, abuse_role_id=role.id)
-    await ctx.send(f"✅ `.abuse` will now ping {role.mention}.")
+    await ctx.send(embed=ui.ok(f"`.abuse` will now ping {role.mention}.", "Abuse alerts"))
 
 
 @bot.command(name="setabusechannel")
@@ -2858,11 +3213,13 @@ async def cmd_setabusechannel(ctx: commands.Context, channel: discord.TextChanne
     """Set where .abuse pings go. Usage: .setabusechannel #channel"""
     if channel is None:
         cur = ctx.guild.get_channel(get_config(ctx.guild.id).get("abuse_channel_id") or 0)
-        await ctx.send(f"Abuse channel: {cur.mention if cur else 'wherever .abuse is used'}. "
-                       f"Usage: `{PREFIX}setabusechannel #channel`")
+        await ctx.send(embed=ui.info(f"Abuse channel: "
+                                     f"{cur.mention if cur else 'wherever `.abuse` is used'}.\n"
+                                     f"Set one with `{PREFIX}setabusechannel #channel`.",
+                                     "Abuse alerts"))
         return
     update_config(ctx.guild.id, abuse_channel_id=channel.id)
-    await ctx.send(f"✅ Abuse pings will go to {channel.mention}.")
+    await ctx.send(embed=ui.ok(f"Abuse pings will go to {channel.mention}.", "Abuse alerts"))
 
 
 @bot.command(name="vcjoin")
@@ -2880,21 +3237,23 @@ async def cmd_vcjoin(ctx: commands.Context, channel: str = "") -> None:
     elif ctx.author.voice and ctx.author.voice.channel:
         target = ctx.author.voice.channel
     if target is None:
-        await ctx.send(f"Sit in a VC first, or `.vcjoin #voice`.")
+        await ctx.send(embed=ui.info(f"Sit in a voice channel first, or give me one: "
+                                     f"`{PREFIX}vcjoin #voice`.", "Voice"))
         return
     try:
         vc = ctx.guild.voice_client
         if vc and vc.channel and vc.channel.id == target.id:
-            await ctx.send(f"Already in {target.mention}.")
+            await ctx.send(embed=ui.info(f"I'm already in {target.mention}.", "Voice"))
             return
         if vc:
             await vc.move_to(target)
         else:
             await target.connect()
         update_config(ctx.guild.id, mod_vc_channel_id=target.id)
-        await ctx.send(f"🎧 Joined {target.mention} — moderating VC. `.vcleave` to bounce me.")
+        await ctx.send(embed=ui.ok(f"Joined {target.mention} — moderating that VC. "
+                                   f"`{PREFIX}vcleave` to send me away.", "🎧 Voice"))
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Can't join (need Connect perm): {exc}")
+        await ctx.send(embed=ui.err(f"I can't join (need Connect permission): {exc}"))
 
 
 async def speak_text(guild: discord.Guild, text: str) -> str:
@@ -2977,20 +3336,24 @@ async def cmd_voice(ctx: commands.Context, name: str = "") -> None:
     name = name.lower().strip()
     if not name:
         cur = get_config(ctx.guild.id).get("tts_voice", "aria")
-        await ctx.send("Voice: **{}**. Options: {}".format(cur, ", ".join(sorted(VOICES))))
+        await ctx.send(embed=ui.info(f"Current voice: **{cur}**\n"
+                                     f"Available: {', '.join(f'`{v}`' for v in sorted(VOICES))}",
+                                     "TTS voice"))
         return
     if name not in VOICES:
-        await ctx.send(f"Unknown voice. Options: {', '.join(sorted(VOICES))}")
+        await ctx.send(embed=ui.err(f"Unknown voice `{name}`. Available: "
+                                    f"{', '.join(f'`{v}`' for v in sorted(VOICES))}"))
         return
     update_config(ctx.guild.id, tts_voice=name)
-    await ctx.send(f"🎙️ Voice set to **{name}**.")
+    await ctx.send(embed=ui.ok(f"TTS voice set to **{name}**.", "Voice updated"))
 
 
 @bot.command(name="ask")
 async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
     """Ask the AI out loud in VC. Usage: .ask <question> (bot must be in VC)"""
     if not question:
-        await ctx.send(f"Usage: `{PREFIX}ask <question>` — I think, then say it in VC.")
+        await ctx.send(embed=ui.info(f"`{PREFIX}ask <question>` — I'll think, then say it out "
+                                     "loud in your voice channel.", "Ask out loud"))
         return
     ask_savage = bool(ctx.guild and get_config(ctx.guild.id).get("bot_mood") == "savage")
     ask_low = " " + question.lower() + " "
@@ -3030,7 +3393,7 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
     await ctx.send(answer[:1900])
     status = await speak_text(ctx.guild, answer[:300])
     if status != "speaking":
-        await ctx.send(f"🔇 (voice: {status})")
+        await ctx.send(embed=ui.warn(f"Voice playback: {status}", "🔇 Voice"))
 
 
 @bot.command(name="speak")
@@ -3038,11 +3401,12 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
 async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
     """Bot says it out loud in VC. Usage: .speak <text> (staff/whitelist only)."""
     if not text:
-        await ctx.send(f"Usage: `{PREFIX}speak <text>` (join a VC with `.vcjoin` first)")
+        await ctx.send(embed=ui.info(f"`{PREFIX}speak <text>` — join a voice channel with "
+                                     f"`{PREFIX}vcjoin` first.", "Speak"))
         return
     status = await speak_text(ctx.guild, text)
     if status != "speaking":
-        await ctx.send(f"🔇 {status}")
+        await ctx.send(embed=ui.warn(f"Voice playback: {status}", "🔇 Voice"))
 
 
 @bot.command(name="voiceauto")
@@ -3052,10 +3416,13 @@ async def cmd_voiceauto(ctx: commands.Context, state: str = "") -> None:
     state = state.lower().strip()
     if state in ("on", "off"):
         update_config(ctx.guild.id, voice_auto=(state == "on"))
-        await ctx.send(f"🔊 Voice replies **{state.upper()}**.")
+        await ctx.send(embed=ui.ok(f"Voice replies are now **{state.upper()}**.",
+                                   "🔊 Voice replies"))
     else:
         cur = get_config(ctx.guild.id).get("voice_auto", False)
-        await ctx.send(f"Voice replies: **{'ON' if cur else 'OFF'}**. `.voiceauto on|off`.")
+        await ctx.send(embed=ui.info(f"Voice replies: **{'ON' if cur else 'OFF'}**.\n"
+                                     f"Toggle with `{PREFIX}voiceauto on|off`.",
+                                     "🔊 Voice replies"))
 
 
 @bot.command(name="vcleave")
@@ -3063,14 +3430,14 @@ async def cmd_voiceauto(ctx: commands.Context, state: str = "") -> None:
 async def cmd_vcleave(ctx: commands.Context) -> None:
     vc = ctx.guild.voice_client if ctx.guild else None
     if not vc:
-        await ctx.send("Not in a VC.")
+        await ctx.send(embed=ui.info("I'm not in a voice channel.", "Voice"))
         return
     try:
         await vc.disconnect()
     except (discord.Forbidden, discord.HTTPException):
         pass
     update_config(ctx.guild.id, mod_vc_channel_id=None)
-    await ctx.send("👋 Left VC.")
+    await ctx.send(embed=ui.ok("Left the voice channel.", "👋 Voice"))
 
 
 @bot.command(name="setlobby")
@@ -3082,24 +3449,29 @@ async def cmd_setlobby(ctx: commands.Context, channel: str = "") -> None:
         cfg = get_config(ctx.guild.id)
         cid = cfg.get("lobby_channel_id")
         ch = ctx.guild.get_channel(cid) if cid else None
-        await ctx.send(f"Lobby VC: {ch.mention if ch else 'not set'}. "
-                       f"Join it and I make you a temp VC. `.setlobby #voice` to set.")
+        await ctx.send(embed=ui.info(f"Lobby VC: {ch.mention if ch else '**not set**'}.\n"
+                                     f"Members join it and I spin up a personal VC. "
+                                     f"Set one with `{PREFIX}setlobby #voice`.",
+                                     "Join-to-create"))
         return
     if channel in ("off", "none", "clear"):
         update_config(ctx.guild.id, lobby_channel_id=None)
-        await ctx.send("✅ Lobby system off.")
+        await ctx.send(embed=ui.ok("The join-to-create lobby is off.", "Lobby system"))
         return
     try:
         cid = int(channel.strip("<#>"))
     except ValueError:
-        await ctx.send(f"Usage: `{PREFIX}setlobby #voice-channel` (must be a VOICE channel).")
+        await ctx.send(embed=ui.info(f"`{PREFIX}setlobby #voice-channel` — must be a "
+                                     "**voice** channel.", "Join-to-create"))
         return
     target = ctx.guild.get_channel(cid)
     if not isinstance(target, discord.VoiceChannel):
-        await ctx.send("❌ That's not a voice channel. Create one (e.g. `＋ Create`) first.")
+        await ctx.send(embed=ui.err("That's not a voice channel — create one first "
+                                    "(e.g. `＋ Create`)."))
         return
     update_config(ctx.guild.id, lobby_channel_id=target.id)
-    await ctx.send(f"✅ Join {target.mention} and I'll spin you a personal VC (deleted when empty).")
+    await ctx.send(embed=ui.ok(f"Members who join {target.mention} get a personal VC, "
+                               "deleted when empty.", "Lobby enabled"))
 
 
 @bot.command(name="whitelist")
@@ -3108,16 +3480,19 @@ async def cmd_whitelist(ctx: commands.Context, action: str = "", target: str = "
     cfg = get_config(ctx.guild.id)
     action = action.lower()
     if action == "list":
-        await ctx.send(
-            f"Users: {cfg['whitelisted_user_ids'] or '—'}\nRoles: {cfg['whitelisted_role_ids'] or '—'}"
-        )
+        await ctx.send(embed=ui.embed(
+            "✅ Whitelist",
+            f"**Users:** {cfg['whitelisted_user_ids'] or '—'}\n"
+            f"**Roles:** {cfg['whitelisted_role_ids'] or '—'}",
+            "info", footer=f"{ui.FOOTER} • trusted members bypass automod"))
         return
     # accept user or role mention/ID: <@123>, <@&123>, raw ID
     raw = target.strip("<>@#!&")
     try:
         tid = int(raw)
     except ValueError:
-        await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@user|@role|ID>` / `{PREFIX}whitelist list`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}whitelist add|remove <@user|@role|ID>` · "
+                                     f"`{PREFIX}whitelist list`", "Whitelist"))
         return
     role = ctx.guild.get_role(tid) if ctx.guild else None
     if role is not None:
@@ -3127,10 +3502,11 @@ async def cmd_whitelist(ctx: commands.Context, action: str = "", target: str = "
         elif action == "remove" and tid in roles:
             roles.remove(tid)
         else:
-            await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@role>`")
+            await ctx.send(embed=ui.info(f"`{PREFIX}whitelist add|remove <@role>`", "Whitelist"))
             return
         update_config(ctx.guild.id, whitelisted_role_ids=roles)
-        await ctx.send(f"✅ Whitelist role {'added' if action == 'add' else 'removed'} **{role.name}**.")
+        await ctx.send(embed=ui.ok(f"Whitelist role {'added' if action == 'add' else 'removed'}: "
+                                   f"**{role.name}**.", "Whitelist updated"))
         return
     users = list(cfg["whitelisted_user_ids"])
     if action == "add" and tid not in users:
@@ -3138,37 +3514,57 @@ async def cmd_whitelist(ctx: commands.Context, action: str = "", target: str = "
     elif action == "remove" and tid in users:
         users.remove(tid)
     else:
-        await ctx.send(f"Usage: `{PREFIX}whitelist add|remove <@user|@role|ID>`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}whitelist add|remove <@user|@role|ID>`",
+                                     "Whitelist"))
         return
     update_config(ctx.guild.id, whitelisted_user_ids=users)
-    await ctx.send(f"✅ Whitelist {'added' if action == 'add' else 'removed'} `{tid}`.")
+    await ctx.send(embed=ui.ok(f"Whitelist {'added' if action == 'add' else 'removed'}: `{tid}`.",
+                               "Whitelist updated"))
 
 
 # ---------- verify gate (dyno-style) ----------
+
+def verify_prompt_embed(guild_name: str) -> discord.Embed:
+    em = ui.embed("🔐  Verify to Enter", kind="brand",
+                  footer=f"{ui.FOOTER} • verification")
+    em.description = (f"**New here?** Click the button below to unlock **{guild_name}**.\n"
+                      "Trouble with the button? Type `.verify`.")
+    return em
+
 
 class VerifyView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="✅ Verify me", style=discord.ButtonStyle.green,
+    @discord.ui.button(label="Verify me", emoji="✅", style=discord.ButtonStyle.success,
                        custom_id="wigglesworth_verify")
     async def verify_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         cfg = get_config(interaction.guild.id)
         role = interaction.guild.get_role(cfg.get("verified_role_id") or 0)
         if role is None:
-            await interaction.response.send_message("❌ Verify isn't set up.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=ui.err("Verification isn't set up on this server — tell an admin.",
+                             "Not configured"),
+                ephemeral=True)
             return
         if role in interaction.user.roles:
-            await interaction.response.send_message("You're already verified!", ephemeral=True)
+            await interaction.response.send_message(
+                embed=ui.info("You're already verified — welcome!"),
+                ephemeral=True)
             return
         try:
             await interaction.user.add_roles(role, reason="Self-verify button")
-            await interaction.response.send_message(
-                f"✅ Verified! Welcome to **{interaction.guild.name}**.", ephemeral=True)
-            await send_log(interaction.guild, f"✅ {interaction.user} (`{interaction.user.id}`) verified.", event="verify")
+            em = ui.ok(f"Welcome to **{interaction.guild.name}**! You now have full access.",
+                       "Verified!")
+            await interaction.response.send_message(embed=em, ephemeral=True)
+            await send_log(interaction.guild, "", event="verify", embed=ui.embed(
+                "✅ Member verified",
+                f"**{interaction.user.display_name}** (`{interaction.user.id}`)",
+                "success", footer=f"{ui.FOOTER} • verification"))
         except (discord.Forbidden, discord.HTTPException):
             await interaction.response.send_message(
-                "❌ Can't assign role (bot role must be above Verified). Tell an admin.",
+                embed=ui.err("I can't assign the Verified role — my role must sit above it. "
+                             "Tell an admin.", "Missing permission"),
                 ephemeral=True)
 
 
@@ -3216,14 +3612,16 @@ async def cmd_verifysetup(ctx: commands.Context, *args: str) -> None:
         try:
             vrole = await guild.create_role(name="Verified", reason="Verify gate setup")
         except (discord.Forbidden, discord.HTTPException) as exc:
-            await ctx.send(f"❌ Can't create role (need Manage Roles): {exc}")
+            await ctx.send(embed=ui.err(f"I couldn't create the role (need **Manage Roles**): "
+                                        f"{exc}"))
             return
     if vchan is None:
         try:
             vchan = await guild.create_text_channel("verify", reason="Verify gate setup",
                                                     topic="Click ✅ Verify me below to unlock the server!")
         except (discord.Forbidden, discord.HTTPException) as exc:
-            await ctx.send(f"❌ Can't create channel (need Manage Channels): {exc}")
+            await ctx.send(embed=ui.err(f"I couldn't create the channel (need **Manage Channels**): "
+                                        f"{exc}"))
             return
     locked, skipped = await verify_lockdown(guild, vchan.id)
     # Verified role sees everything @everyone lost
@@ -3240,22 +3638,25 @@ async def cmd_verifysetup(ctx: commands.Context, *args: str) -> None:
     except (discord.Forbidden, discord.HTTPException):
         pass
     try:
-        await vchan.send("👋 **New here?** Click the button to unlock **{}**!\n"
-                         "(Having trouble? type `.verify`)".format(guild.name),
-                         view=VerifyView())
+        await vchan.send(embed=verify_prompt_embed(guild.name), view=VerifyView())
     except (discord.Forbidden, discord.HTTPException):
         pass
-    await ctx.send(f"✅ Gate live: {vchan.mention} + `{vrole.name}` — locked {locked} channel(s)"
-                   + (f", {skipped} skipped (no perms)." if skipped else "."))
+    await ctx.send(embed=ui.ok(f"Gate live — {vchan.mention} with role `{vrole.name}`. "
+                               f"Locked **{locked}** channel(s)"
+                               + (f", skipped {skipped} (missing permissions)." if skipped else "."),
+                               "✅ Verify gate"))
 
 
 @bot.group(name="giveaway", invoke_without_command=True)
 async def cmd_giveaway(ctx: commands.Context) -> None:
     """Giveaways. Usage: .giveaway create|end|reroll|list|info"""
-    await ctx.send(f"🎁 `{PREFIX}giveaway create <prize> | <duration> | <winners> [#channel]`\n"
-                   f"e.g. `{PREFIX}giveaway create Nitro | 24h | 1`\n"
-                   f"Also: `{PREFIX}giveaway end [id]` · `{PREFIX}giveaway reroll [id]` · "
-                   f"`{PREFIX}giveaway list` · `{PREFIX}giveaway info <id>`")
+    await ctx.send(embed=ui.embed(
+        "🎁 Giveaways",
+        (f"`{PREFIX}giveaway create <prize> | <duration> | <winners> [#channel]`\n"
+         f"e.g. `{PREFIX}giveaway create Nitro | 24h | 1`\n"
+         f"`{PREFIX}giveaway end [id]` · `{PREFIX}giveaway reroll [id]` · "
+         f"`{PREFIX}giveaway list` · `{PREFIX}giveaway info <id>`"),
+        "gold", footer=f"{ui.FOOTER} • giveaways"))
 
 
 @cmd_giveaway.command(name="create")
@@ -3264,10 +3665,10 @@ async def cmd_giveaway_create(ctx: commands.Context, *, args: str = "") -> None:
     """Start a giveaway. Usage: .giveaway create Nitro | 24h | 1 [#channel]"""
     import re as _re
     parts = [p.strip() for p in args.split("|")]
-    usage = (f"Usage: `{PREFIX}giveaway create <prize> | <duration> | <winners> [#channel]`\n"
+    usage = (f"`{PREFIX}giveaway create <prize> | <duration> | <winners> [#channel]`\n"
              f"Duration like `30m`, `2h`, `7d` (1m–30d). Winners 1–10.")
     if len(parts) < 3:
-        await ctx.send(usage)
+        await ctx.send(embed=ui.info(usage, "Giveaway usage"))
         return
     m = _re.match(r"(\d+)", parts[2])
     try:
@@ -3276,7 +3677,7 @@ async def cmd_giveaway_create(ctx: commands.Context, *, args: str = "") -> None:
         winners_n = 0
     dur_s = parse_duration(parts[1])
     if not parts[0] or dur_s is None or not winners_n:
-        await ctx.send(usage)
+        await ctx.send(embed=ui.info(usage, "Giveaway usage"))
         return
     target = ctx.channel
     afterwards = " ".join(parts[3:]) + " " + parts[2]
@@ -3301,7 +3702,8 @@ async def cmd_giveaway_create(ctx: commands.Context, *, args: str = "") -> None:
                 if hit is not None:
                     target = hit
     gid = await create_giveaway(ctx.guild, target, parts[0], dur_s, winners_n, ctx.author.id)
-    await ctx.send(f"🎁 Giveaway started in {target.mention} — id `{gid}`.")
+    await ctx.send(embed=ui.ok(f"Giveaway started in {target.mention} — id `{gid}`.",
+                               "🎁 Giveaway live"))
 
 
 @cmd_giveaway.command(name="end")
@@ -3310,9 +3712,12 @@ async def cmd_giveaway_end(ctx: commands.Context, gid: str = "") -> None:
     """End a giveaway now. Usage: .giveaway end [id]"""
     g = _gw_find(ctx.guild.id, gid or None, active_only=True)
     if g is None:
-        await ctx.send("No active giveaway found (try `.giveaway list`).")
+        await ctx.send(embed=ui.warn(f"No active giveaway found — try `{PREFIX}giveaway list`.",
+                                     "Giveaways"))
         return
-    await ctx.send(await end_giveaway(g["id"], by=str(ctx.author.id)))
+    await ctx.send(embed=ui.embed("🎁 Giveaway ended",
+                                  await end_giveaway(g["id"], by=str(ctx.author.id)), "gold",
+                                  footer=ui.FOOTER))
 
 
 @cmd_giveaway.command(name="reroll")
@@ -3325,9 +3730,12 @@ async def cmd_giveaway_reroll(ctx: commands.Context, gid: str = "") -> None:
         items = [g for g in items if g["id"].lower().startswith(gid.strip().lower())]
     items.sort(key=lambda g: g.get("ended_at", g.get("created", 0)), reverse=True)
     if not items:
-        await ctx.send("No ended giveaway found (try `.giveaway list`).")
+        await ctx.send(embed=ui.warn(f"No ended giveaway found — try `{PREFIX}giveaway list`.",
+                                     "Giveaways"))
         return
-    await ctx.send(await reroll_giveaway(items[0]["id"]))
+    await ctx.send(embed=ui.embed("🔁 Giveaway rerolled",
+                                  await reroll_giveaway(items[0]["id"]), "gold",
+                                  footer=ui.FOOTER))
 
 
 @cmd_giveaway.command(name="list")
@@ -3335,17 +3743,28 @@ async def cmd_giveaway_list(ctx: commands.Context) -> None:
     """Show giveaways. Usage: .giveaway list"""
     items = [g for g in giveaway_data.values() if g.get("guild") == str(ctx.guild.id)]
     if not items:
-        await ctx.send("No giveaways yet. Staff: `.giveaway create <prize> | <duration> | <winners>`")
+        await ctx.send(embed=ui.info(
+            "No giveaways yet. Staff can start one with\n"
+            "`.giveaway create <prize> | <duration> | <winners>`.",
+            "No giveaways"))
         return
     active = sorted([g for g in items if g.get("status") == "active"], key=lambda g: g["ends_at"])
     ended = sorted([g for g in items if g.get("status") != "active"],
                    key=lambda g: g.get("ended_at", g.get("created", 0)), reverse=True)[:5]
-    lines = [f"🟢 **{g['prize']}** — `{g['id']}` · {len(g.get('entrants', []))} entries · "
+    em = ui.embed("🎁  Giveaways", kind="gold", footer=f"{ui.FOOTER} • {ctx.guild.name}")
+    parts = [f"🟢 **{g['prize']}** · `{g['id']}` — {len(g.get('entrants', []))} entries · "
              f"ends <t:{int(g['ends_at'])}:R> · <#{g['channel']}>" for g in active]
-    for g in ended:
-        w = ", ".join(f"<@{u}>" for u in g.get("winners", [])) or "no winner"
-        lines.append(f"⚪ **{g['prize']}** — `{g['id']}` · winner(s): {w}")
-    await ctx.send("\n".join(lines)[:1900])
+    if ended:
+        if parts:
+            parts.append(ui.DIVIDER)
+        parts.append("**Recently ended**")
+        for g in ended:
+            w = ", ".join(f"<@{u}>" for u in g.get("winners", [])) or "*no winner*"
+            parts.append(f"⚪ **{g['prize']}** · `{g['id']}` — {w}")
+    if not parts:
+        parts = ["No giveaways right now."]
+    em.description = "\n".join(parts)[:4000]
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
 @cmd_giveaway.command(name="info")
@@ -3353,38 +3772,49 @@ async def cmd_giveaway_info(ctx: commands.Context, gid: str = "") -> None:
     """Show one giveaway. Usage: .giveaway info <id>"""
     g = _gw_find(ctx.guild.id, gid or None)
     if g is None:
-        await ctx.send("Giveaway not found (try `.giveaway list`).")
+        await ctx.send(embed=ui.err("Giveaway not found — try `.giveaway list`.",
+                                    "Not found"))
         return
     host = ctx.guild.get_member(int(g["host"])) if str(g["host"]).isdigit() and int(g["host"]) else None
-    await ctx.send(embed=E(f"🎁 {g['prize']}",
-        f"Status: **{g['status']}**\nWinners: **{g['winners_n']}**\n"
-        f"Entries: **{len(g.get('entrants', []))}**\nEnds: <t:{int(g['ends_at'])}:R>\n"
-        f"Channel: <#{g['channel']}>\nHost: {host.mention if host else 'the dashboard'}\n"
-        f"Winners: " + (", ".join(f"<@{u}>" for u in g.get("winners", [])) or "—"), kind="info"))
+    em = ui.embed(f"🎁  {g['prize']}", kind="gold", footer=f"{ui.FOOTER} • giveaway info")
+    em.add_field(name="📌 Status", value=f"**{g['status'].title()}**", inline=True)
+    em.add_field(name="🏆 Winners", value=f"**{g['winners_n']}**", inline=True)
+    em.add_field(name="👥 Entries", value=f"**{len(g.get('entrants', []))}**", inline=True)
+    em.add_field(name="⏰ Ends", value=f"<t:{int(g['ends_at'])}:R>", inline=True)
+    em.add_field(name="📢 Channel", value=f"<#{g['channel']}>", inline=True)
+    em.add_field(name="👤 Host", value=host.mention if host else "the dashboard", inline=True)
+    if g.get("winners"):
+        em.add_field(name="🥇 Winner(s)",
+                     value=", ".join(f"<@{u}>" for u in g.get("winners", [])), inline=False)
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="help")
 async def cmd_help(ctx: commands.Context) -> None:
     """Everyone's commands (locked staff commands hidden). Usage: .help"""
     if ctx.guild is None:
-        await ctx.send("Use this inside the server.")
+        await ctx.send(embed=ui.err("Run this command inside a server."))
         return
-    em = discord.Embed(title="📖 Commands", color=discord.Color.blurple())
+    em = ui.embed("📖  Commands", kind="brand",
+                  footer=f"{ui.FOOTER} • staff: .help2 shows everything")
+    em.description = "Everything you can do here — one line each."
+    em.add_field(name="⚡ Leveling",
+                 value=("`.rank [@user]` — profile & progress card\n"
+                        "`.leaderboard` — server top members\n"
+                        "`.messages [@user]` — message statistics\n"
+                        "`.xp` — how XP works · `.afk [reason]`"),
+                 inline=False)
     em.add_field(name="💬 Chat & fun",
-                 value=("`.ask` talk to the AI · `.8ball` · `.trivia` · `.story`\n"
+                 value=("`.ask` AI chat · `.8ball` · `.trivia` · `.story`\n"
                         "`.compliment [@user]` · `.confess` (anonymous) · `.catchup`\n"
                         "`.tr <lang> <text>` · `.rps` · `.roll` · `.flip`"),
-                 inline=False)
-    em.add_field(name="🏆 XP",
-                 value="`.rank [@user]` · `.leaderboard` · `.afk [reason]`",
                  inline=False)
     em.add_field(name="🛡️ Server",
                  value=("`.verify` · `.abuse <what's happening>` · `.suggest <idea>`\n"
                         "`.poll \"Q\" \"A\" \"B\"` · `.remind <10s+> <text>` · `.events`\n"
                         "`.cases [@user]` · `.apply` · `.serverinfo` · `.userinfo [@user]`\n"
-                        "`.giveaway list` · `.giveaway info <id>`"),
+                        "`.giveaway list` · `.giveaway info <id>` · `.raidstatus`"),
                  inline=False)
-    em.set_footer(text="Staff: .help2 shows everything.")
     await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -3393,17 +3823,23 @@ async def cmd_help(ctx: commands.Context) -> None:
 async def cmd_help2(ctx: commands.Context) -> None:
     """All commands (staff/whitelist only). Usage: .help2"""
     if ctx.guild is None:
-        await ctx.send("Use this inside the server.")
+        await ctx.send(embed=ui.err("Run this command inside a server."))
         return
-    em = discord.Embed(title="📖 All commands (staff)", color=discord.Color.gold())
+    em = ui.embed("📖  All Commands (staff)", kind="gold",
+                  footer=f"{ui.FOOTER} • full command reference")
+    em.add_field(name="⚡ Leveling (open)",
+                 value=("`.rank` · `.leaderboard` · `.messages` · `.xp` · `.afk`\n"
+                        "`staff:` `.xpconfig` · `.xpadd` · `.xpset` · `.xpreset` · "
+                        "`.leveladd` · `.levelset`"),
+                 inline=False)
     em.add_field(name="💬 Chat & fun (open)",
                  value=("`.ask` · `.8ball` · `.trivia` · `.story` · `.compliment`\n"
                         "`.confess` · `.catchup` · `.tr` · `.rps` · `.roll` · `.flip`"),
                  inline=False)
-    em.add_field(name="🏆 XP / server (open)",
-                 value=("`.rank` · `.leaderboard` · `.afk` · `.verify` · `.abuse`\n"
-                        "`.suggest` · `.poll` · `.remind` · `.events` · `.cases`\n"
-                        "`.apply` · `.serverinfo` · `.userinfo` · `.giveaway list/info`"),
+    em.add_field(name="🛡️ Server (open)",
+                 value=("`.verify` · `.abuse` · `.suggest` · `.poll` · `.remind`\n"
+                        "`.events` · `.cases` · `.apply` · `.serverinfo` · `.userinfo`\n"
+                        "`.giveaway list/info` · `.raidstatus`"),
                  inline=False)
     em.add_field(name="📢 Broadcast (whitelist+)",
                  value="`.say` · `.speak` · `.vcjoin` · `.vcleave` · `.voice` · `.voiceauto` · `.setlobby`",
@@ -3417,7 +3853,7 @@ async def cmd_help2(ctx: commands.Context) -> None:
                         "`.rolemenu` · `.setwelcome` · `.setgoodbye` · `.linkchannel`\n"
                         "`.setlog` · `.setchat` · `.setabuserole` · `.setabusechannel`\n"
                         "`.verifysetup` · `.verifyoff` · `.verifyfix` · `.diag`\n"
-                        "`.giveaway create|end|reroll` · `.xpreset` · `.xpadd` · `.xpset` · `.leveladd` · `.levelset`"),
+                        "`.giveaway create|end|reroll` · `.xpconfig`"),
                  inline=False)
     em.add_field(name="👑 Owner only",
                  value="`.status` · `.setbio` · `.shutdown` · `.disable` · `.enable` · `.giverole`",
@@ -3429,16 +3865,19 @@ async def cmd_help2(ctx: commands.Context) -> None:
 async def cmd_helpme(ctx: commands.Context) -> None:
     """Show the help card. Usage: .helpme"""
     if ctx.guild is None:
-        await ctx.send("Use this inside the server.")
+        await ctx.send(embed=ui.err("Run this command inside a server."))
         return
-    await ctx.send(help_text(ctx.guild.name))
+    await ctx.send(embed=ui.embed("📖 Help", help_text(ctx.guild.name), "info",
+                                  footer=f"{ui.FOOTER} • quick start"))
 
 
 @bot.command(name="verifyoff")
 @owner_or_admin()
 async def cmd_verifyoff(ctx: commands.Context) -> None:
     update_config(ctx.guild.id, verify_enabled=False)
-    await ctx.send("Verify gate off (roles/channels untouched — re-run `.verifysetup` to re-lock).")
+    await ctx.send(embed=ui.ok("The verify gate is off — roles and channels untouched. "
+                               f"Re-run `{PREFIX}verifysetup` to lock again.",
+                               "Verify gate off"))
 
 
 @bot.command(name="verifyfix")
@@ -3449,44 +3888,47 @@ async def cmd_verifyfix(ctx: commands.Context) -> None:
     vchan = ctx.guild.get_channel(cfg.get("verify_channel_id") or 0)
     vrole = ctx.guild.get_role(cfg.get("verified_role_id") or 0)
     if not vchan or not vrole:
-        await ctx.send("Nothing to fix — run `.verifysetup [@role] [#channel]` first.")
+        await ctx.send(embed=ui.warn(f"Nothing to fix yet — run `{PREFIX}verifysetup "
+                                     "[@role] [#channel]` first.", "Verify gate"))
         return
     try:
         await vchan.set_permissions(vrole, view_channel=False, reason="Verify gate fix")
     except (discord.Forbidden, discord.HTTPException):
         pass
     try:
-        await vchan.send("👋 **New here?** Click the button to unlock **{}**!\n"
-                         "(Having trouble? type `.verify`)".format(ctx.guild.name),
-                         view=VerifyView())
+        await vchan.send(embed=verify_prompt_embed(ctx.guild.name), view=VerifyView())
     except (discord.Forbidden, discord.HTTPException):
         pass
     update_config(ctx.guild.id, verify_enabled=True)
-    await ctx.send(f"✅ Fixed: {vrole.name} can no longer see {vchan.mention}; button re-posted.")
+    await ctx.send(embed=ui.ok(f"{vrole.name} can no longer see {vchan.mention} — "
+                               "the button was re-posted.", "Verify gate repaired"))
 
 
 @bot.command(name="verify")
 async def cmd_verify(ctx: commands.Context) -> None:
     """Fallback when the button won't work. Usage: .verify"""
     if ctx.guild is None:
-        await ctx.send("Verify inside the server.")
+        await ctx.send(embed=ui.err("Verify inside a server — the button only works there."))
         return
     cfg = get_config(ctx.guild.id)
     if not cfg.get("verify_enabled"):
-        await ctx.send("No verify gate here.")
+        await ctx.send(embed=ui.info("This server doesn't use a verify gate."))
         return
     role = ctx.guild.get_role(cfg.get("verified_role_id") or 0)
     if role is None:
-        await ctx.send("❌ Verified role missing — ask an admin to re-run `.verifysetup`.")
+        await ctx.send(embed=ui.err("The Verified role is missing — ask an admin to re-run "
+                                    "`.verifysetup`.", "Verify broken"))
         return
     if role in ctx.author.roles:
-        await ctx.send("Already verified!")
+        await ctx.send(embed=ui.info("You're already verified — welcome!"))
         return
     try:
         await ctx.author.add_roles(role, reason="Self-verify command")
-        await ctx.send(f"✅ Verified! Welcome to **{ctx.guild.name}**.")
+        await ctx.send(embed=ui.ok(f"Welcome to **{ctx.guild.name}** — full access unlocked!",
+                                   "Verified!"))
     except (discord.Forbidden, discord.HTTPException):
-        await ctx.send("❌ Can't assign role — tell an admin (bot role order).")
+        await ctx.send(embed=ui.err("I can't assign the role — tell an admin "
+                                    "(my role must sit above Verified).", "Missing permission"))
 
 
 @bot.event
@@ -3513,7 +3955,8 @@ async def cmd_purge(ctx: commands.Context, amount: int = 0,
                     member: discord.Member | None = None) -> None:
     """Bulk delete. Usage: .purge <1-100> [@user]"""
     if amount < 1 or amount > 100:
-        await ctx.send(f"Usage: `{PREFIX}purge <1-100> [@user]`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}purge <1-100> [@user]` — "
+                                     "number of messages to delete.", "Purge"))
         return
     try:
         if member:
@@ -3527,16 +3970,20 @@ async def cmd_purge(ctx: commands.Context, amount: int = 0,
                         pass
                     if count >= amount:
                         break
-            await ctx.send(f"🧹 Deleted {count} message(s) from {member.display_name}.",
+            await ctx.send(embed=ui.ok(f"Deleted **{count}** message(s) from "
+                                       f"{member.display_name}.", "🧹 Purge"),
                            delete_after=6)
         else:
             deleted = await ctx.channel.purge(limit=amount + 1)  # +1 includes the command
-            await ctx.send(f"🧹 Deleted {max(len(deleted) - 1, 0)} message(s).", delete_after=6)
-        await send_log(ctx.guild, f"🧹 {ctx.author} purged {amount}"
-                                  f"{f' from {member}' if member else ''} in {ctx.channel.mention}.",
-                         event="purge")
+            await ctx.send(embed=ui.ok(f"Deleted **{max(len(deleted) - 1, 0)}** message(s).",
+                                       "🧹 Purge"), delete_after=6)
+        await send_log(ctx.guild, "", event="purge", embed=ui.embed(
+            "🧹 Purge",
+            f"**{amount}** message(s) removed{f' from **{member.display_name}**' if member else ''} "
+            f"in {ctx.channel.mention} by **{ctx.author.display_name}**.",
+            "warning", footer=f"{ui.FOOTER} • moderation"))
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Purge failed (need Manage Messages): {exc}")
+        await ctx.send(embed=ui.err(f"Purge failed (need **Manage Messages**): {exc}"))
 
 
 @bot.command(name="mute")
@@ -3545,12 +3992,18 @@ async def cmd_mute(ctx: commands.Context, member: discord.Member, minutes: int =
                    *, reason: str = "mod mute") -> None:
     """Timeout a member. Usage: .mute @user [minutes] [reason]"""
     if minutes < 1 or minutes > 40320:
-        await ctx.send("Minutes must be 1–40320 (28 days max).")
+        await ctx.send(embed=ui.err("Minutes must be **1–40320** (28 days max)."))
         return
     try:
         await member.timeout(timedelta(minutes=minutes), reason=f"{ctx.author}: {reason}")
-        await ctx.send(f"🔇 {member.display_name} muted {minutes}m.")
-        await send_log(ctx.guild, f"🔇 {ctx.author} muted {member} (`{member.id}`) {minutes}m: {sanitize_mentions(reason)}", event="mute")
+        await ctx.send(embed=ui.ok(f"**{member.display_name}** muted for **{minutes}m**.\n"
+                                   f"**Reason:** {sanitize_mentions(reason[:200])}",
+                                   "🔇 Mute"))
+        await send_log(ctx.guild, "", event="mute", embed=ui.embed(
+            "🔇 Member muted",
+            f"**{member.display_name}** (`{member.id}`) — **{minutes}m** by "
+            f"**{ctx.author.display_name}**: {sanitize_mentions(reason[:1000])}",
+            "warning", footer=f"{ui.FOOTER} • moderation"))
         try:
             community.open_case(ctx.guild.id, member.id, member.display_name,
                                 ctx.author.id, str(ctx.author), "mute",
@@ -3558,7 +4011,7 @@ async def cmd_mute(ctx: commands.Context, member: discord.Member, minutes: int =
         except Exception:
             pass
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Mute failed (role order / perms?): {exc}")
+        await ctx.send(embed=ui.err(f"Mute failed (role order or permissions?): {exc}"))
 
 
 @bot.command(name="unmute")
@@ -3566,9 +4019,9 @@ async def cmd_mute(ctx: commands.Context, member: discord.Member, minutes: int =
 async def cmd_unmute(ctx: commands.Context, member: discord.Member) -> None:
     try:
         await member.timeout(None, reason=f"unmuted by {ctx.author}")
-        await ctx.send(f"🔊 {member.display_name} unmuted.")
+        await ctx.send(embed=ui.ok(f"**{member.display_name}** is unmuted.", "🔊 Unmute"))
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Unmute failed: {exc}")
+        await ctx.send(embed=ui.err(f"Unmute failed: {exc}"))
 
 
 @bot.command(name="userinfo", aliases=["whois"])
@@ -3578,17 +4031,31 @@ async def cmd_userinfo(ctx: commands.Context, member: discord.Member | None = No
     now = datetime.now(timezone.utc)
     created = m.created_at if m.created_at.tzinfo else m.created_at.replace(tzinfo=timezone.utc)
     age_days = (now - created).days
-    joined = m.joined_at.strftime("%Y-%m-%d %H:%M UTC") if getattr(m, "joined_at", None) else "?"
     roles = ", ".join(r.name for r in getattr(m, "roles", [])[1:]) or "none"
-    flag = " ⚠️ NEW ACCOUNT" if age_days < 7 else ""
-    embed = discord.Embed(title=f"👤 {m.display_name}", color=discord.Color.blurple())
-    embed.add_field(name="ID", value=f"`{m.id}`", inline=True)
-    embed.add_field(name="Account age", value=f"{age_days} days{flag}", inline=True)
-    embed.add_field(name="Joined server", value=joined, inline=True)
-    embed.add_field(name="Roles", value=roles[:500], inline=False)
+    new_flag = "  ⚠️ **NEW ACCOUNT**" if age_days < 7 else ""
+    embed = ui.embed("👤  Member Intel", kind="brand", footer=f"{ui.FOOTER} • userinfo")
+    embed.set_author(name=m.display_name, icon_url=m.display_avatar.url if m.display_avatar else None)
+    embed.add_field(name="🆔 User ID", value=f"`{m.id}`", inline=True)
+    embed.add_field(name="📅 Account age",
+                    value=f"**{age_days} days**\n<t:{int(created.timestamp())}:R>{new_flag}",
+                    inline=True)
+    if getattr(m, "joined_at", None):
+        jts = int(m.joined_at.replace(tzinfo=m.joined_at.tzinfo or timezone.utc).timestamp())
+        embed.add_field(name="📥 Joined server", value=f"<t:{jts}:R>\n<t:{jts}:F>", inline=True)
+    else:
+        embed.add_field(name="📥 Joined server", value="?", inline=True)
+    entry = xp_data.get(str(ctx.guild.id), {}).get(str(m.id))
+    if entry and not m.bot:
+        xpv = int(entry["xp"])
+        rank, tracked = xp_rank(ctx.guild.id, m.id)
+        msg_total = stats.user_stats(ctx.guild.id, m.id)["total"]
+        embed.add_field(name="⚡ Level",
+                        value=f"**{xp_level(xpv)}** (#{rank} of {tracked})" if rank
+                        else f"**{xp_level(xpv)}**", inline=True)
+        embed.add_field(name="💬 Messages", value=f"**{ui.fmt(msg_total)}**", inline=True)
+    embed.add_field(name="🎭 Roles", value=roles[:1000], inline=False)
     if m.display_avatar:
         embed.set_thumbnail(url=m.display_avatar.url)
-    embed.set_footer(text="Wigglesworth")
     await ctx.send(embed=embed)
 
 
@@ -3597,13 +4064,17 @@ async def cmd_userinfo(ctx: commands.Context, member: discord.Member | None = No
 async def cmd_slowmode(ctx: commands.Context, seconds: int = -1) -> None:
     """Spam damper. Usage: .slowmode <0-21600, 0 = off>"""
     if seconds < 0 or seconds > 21600:
-        await ctx.send(f"Usage: `{PREFIX}slowmode <0-21600>` (current: {ctx.channel.slowmode_delay}s)")
+        await ctx.send(embed=ui.info(f"`{PREFIX}slowmode <0-21600>` — 0 turns it off.\n"
+                                     f"Current: **{ctx.channel.slowmode_delay}s**",
+                                     "Slowmode"))
         return
     try:
         await ctx.channel.edit(slowmode_delay=seconds, reason=f"slowmode by {ctx.author}")
-        await ctx.send(f"🐢 Slowmode {'off' if seconds == 0 else f'{seconds}s'}.")
+        await ctx.send(embed=ui.ok(f"Slowmode is now "
+                                   f"{'**off**' if seconds == 0 else f'**{seconds}s**'}.",
+                                   "🐢 Slowmode"))
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Failed: {exc}")
+        await ctx.send(embed=ui.err(f"Slowmode failed: {exc}"))
 
 
 @bot.event
@@ -3614,9 +4085,14 @@ async def on_member_remove(member: discord.Member) -> None:
     gchan = member.guild.get_channel(cfg.get("goodbye_channel_id") or 0)
     if gchan:
         try:
-            await gchan.send(embed=E(f"👋 {member.display_name} left",
-                                     f"We'll… probably not miss them. Bye!",
-                                     kind="info"))
+            human_count = len([m for m in member.guild.members if not m.bot])
+            em = E(f"👋  Goodbye, {member.display_name}", kind="info")
+            em.description = (f"**{member.display_name}** just left **{member.guild.name}**.\n"
+                              f"That leaves **{human_count}** of us — see you around!")
+            if getattr(member, "display_avatar", None):
+                em.set_thumbnail(url=member.display_avatar.url)
+            em.set_footer(text=f"{ui.FOOTER} • goodbye")
+            await gchan.send(embed=em)
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -3651,20 +4127,20 @@ async def on_message_delete(message: discord.Message) -> None:
 async def cmd_say(ctx: commands.Context, channel: discord.TextChannel | None = None, *, text: str = "") -> None:
     """Speak through the bot. Usage: .say [#channel] <message> (staff/whitelist only)."""
     if not text:
-        await ctx.send(f"Usage: `{PREFIX}say [#channel] <message>`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}say [#channel] <message>`", "Say"))
         return
     target = channel or ctx.channel
     try:
         await target.send(text)
         if target.id != ctx.channel.id:
-            await ctx.send(f"✅ Sent in {target.mention}.")
+            await ctx.send(embed=ui.ok(f"Sent in {target.mention}.", "Say"))
         else:
             try:
                 await ctx.message.delete()
             except (discord.Forbidden, discord.HTTPException):
                 pass
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Could not send: {exc}")
+        await ctx.send(embed=ui.err(f"Could not send: {exc}"))
 
 
 explode_cooldown: dict[int, float] = {}
@@ -3677,7 +4153,8 @@ async def cmd_explode(ctx: commands.Context, *, target: str = "") -> None:
     import time as _t
     now = _t.time()
     if now - explode_cooldown.get(ctx.guild.id if ctx.guild else 0, 0) < 360:
-        await ctx.send("🧯 Chill — the nuke is recharging (6 min).")
+        await ctx.send(embed=ui.warn("The nuke is recharging — give it about 6 minutes.",
+                                     "🧯 Chill"))
         return
     if ctx.guild:
         explode_cooldown[ctx.guild.id] = now
@@ -3725,7 +4202,9 @@ async def cmd_explode(ctx: commands.Context, *, target: str = "") -> None:
 @owner_only()
 async def cmd_shutdown(ctx: commands.Context) -> None:
     """Owner-only: log the bot out (same as Ctrl+C). Set OWNER_ID in .env."""
-    await ctx.send("🛑 Shutting down...")
+    stats.flush()
+    _save_xp(xp_data)
+    await ctx.send(embed=ui.warn("Logging out now — data flushed. Goodbye! 🫡", "Shutting down"))
     await bot.close()
 
 
@@ -3735,7 +4214,8 @@ async def cmd_disable(ctx: commands.Context) -> None:
     """Owner-only: bot stays online but ignores everything except .enable."""
     global bot_enabled
     bot_enabled = False
-    await ctx.send("🔴 Bot disabled — I'll ignore pings, XP and raids until `.enable`.")
+    await ctx.send(embed=ui.warn("I'll stay online but ignore pings, XP and raids until "
+                                 "`.enable`.", "Bot disabled"))
 
 
 @bot.command(name="enable")
@@ -3743,7 +4223,8 @@ async def cmd_disable(ctx: commands.Context) -> None:
 async def cmd_enable(ctx: commands.Context) -> None:
     global bot_enabled
     bot_enabled = True
-    await ctx.send("🟢 Bot enabled.")
+    await ctx.send(embed=ui.ok("All systems back online — watching joins, XP and chat.",
+                               "Bot enabled"))
 
 
 @bot.command(name="giverole")
@@ -3752,7 +4233,7 @@ async def cmd_giverole(ctx: commands.Context, member: discord.Member | None = No
                        role: str = "") -> None:
     """Owner grants any role (bot must outrank it). Usage: .giverole @user @role"""
     if member is None or not role:
-        await ctx.send(f"Usage: `{PREFIX}giverole @user @role`")
+        await ctx.send(embed=ui.info(f"`{PREFIX}giverole @user @role`", "Give role"))
         return
     target = None
     try:
@@ -3760,23 +4241,30 @@ async def cmd_giverole(ctx: commands.Context, member: discord.Member | None = No
     except ValueError:
         pass
     if target is None:
-        await ctx.send("Role not found — mention it.")
+        await ctx.send(embed=ui.err("Role not found — mention it."))
         return
     try:
         await member.add_roles(target, reason=f"granted by owner {ctx.author}")
-        await ctx.send(f"✅ **{member.display_name}** got **{target.name}**.")
+        await ctx.send(embed=ui.ok(f"**{member.display_name}** got **{target.name}**.",
+                                   "Role granted"))
     except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(f"❌ Failed (my role must sit above `{target.name}`): {exc}")
+        await ctx.send(embed=ui.err(f"Failed — my role must sit above `{target.name}`: {exc}"))
 
 
 @bot.command(name="diag")
 @owner_or_admin()
 async def cmd_diag(ctx: commands.Context) -> None:
     """Show bot state for debugging. Usage: .diag"""
-    await ctx.send(
-        f"enabled: **{bot_enabled}**\n"
-        f"prefix: `{PREFIX}` | me: {bot.user.mention if bot.user else '?'}"
-    )
+    em = ui.embed("🩺  Diagnostics", kind="muted", footer=f"{ui.FOOTER} • diag")
+    em.add_field(name="Enabled", value=f"**{'yes' if bot_enabled else 'no'}**", inline=True)
+    em.add_field(name="Prefix", value=f"`{PREFIX}`", inline=True)
+    em.add_field(name="Latency", value=f"**{round(bot.latency * 1000)} ms**", inline=True)
+    em.add_field(name="Guilds", value=f"**{len(bot.guilds)}**", inline=True)
+    em.add_field(name="Stats pending", value=f"**{stats.pending()}**", inline=True)
+    if ctx.guild:
+        em.add_field(name="Tracked members", value=f"**{stats.tracked(ctx.guild.id)}**", inline=True)
+        em.add_field(name="XP earners", value=f"**{len(xp_data.get(str(ctx.guild.id), {}))}**", inline=True)
+    await ctx.send(embed=em)
 
 
 @cmd_lockdown.error
@@ -3819,6 +4307,7 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_xpset.error
 @cmd_leveladd.error
 @cmd_levelset.error
+@cmd_xpconfig.error
 @cmd_shutdown.error
 @cmd_disable.error
 @cmd_enable.error
@@ -3828,22 +4317,25 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
     if isinstance(error, commands.CheckFailure):
         if ctx.command and ctx.command.name in ("shutdown", "disable", "enable", "status",
                                                  "setbio", "giverole"):
-            await ctx.send("❌ Owner only — set your Discord user ID as OWNER_ID in .env.")
+            await ctx.send(embed=ui.err("Owner only — set your Discord user ID as "
+                                        "OWNER_ID in .env."))
         elif ctx.command and ctx.command.name in ("setlog", "setlobby", "setchat", "diag",
                                                      "verifysetup", "verifyoff", "aitest",
                                                      "rolemenu", "teach", "unteach", "mood",
                                                      "setqotd", "chaton", "chatoff", "explode",
                                                      "setwelcome", "setgoodbye",
                                                      "linkchannel", "vcjoin", "vcleave",
-                                                     "voiceauto", "voice"):
-            await ctx.send("❌ Bot owner or server admin only.")
+                                                     "voiceauto", "voice", "xpconfig"):
+            await ctx.send(embed=ui.err("Bot owner or server admin only."))
         elif ctx.command and ctx.command.name in ("say", "speak", "vcjoin", "vcleave",
                                                       "voice", "voiceauto", "setlobby", "help2"):
-            await ctx.send("❌ Staff/whitelisted role only — ask an admin for `.whitelist add @yourrole`.")
+            await ctx.send(embed=ui.err(f"Staff/whitelisted role only — ask an admin for "
+                                        f"`{PREFIX}whitelist add @yourrole`."))
         else:
-            await ctx.send("❌ You need **Administrator** or **Manage Server** permission.")
+            await ctx.send(embed=ui.err("You need **Administrator** or **Manage Server** "
+                                        "permission."))
     else:
-        await ctx.send(f"❌ Error: {error}")
+        await ctx.send(embed=ui.err(f"Command error: {error}"))
 
 
 @bot.check
@@ -3863,4 +4355,11 @@ if __name__ == "__main__":
         _dash.start()
     except Exception as exc:
         print(f"[dash] not started: {exc}")
-    bot.run(TOKEN)
+    try:
+        bot.run(TOKEN)
+    finally:
+        stats.flush()  # last-chance persist of message counters
+        try:
+            _save_xp(xp_data)
+        except OSError:
+            pass

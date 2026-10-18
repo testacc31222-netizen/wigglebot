@@ -314,12 +314,16 @@ async def burst(guild, action: str, target_desc: str, audit_action: str | None =
                         actor=actor, target=target_desc[:160], evidence=ev)
     # alert staff (security channel preferred, log channel w/ fallbacks)
     try:
-        em = bm.E(f"🚨 Possible nuke: {label}",
-                  f"{len(dq)}× in the last {window}s (threshold {threshold}).\n"
-                  f"Target: {target_desc[:160]}\n"
-                  f"Suspect: {(actor['name'] + ' (`' + actor_id + '`)') if actor else 'unknown'} — {note}\n"
-                  f"Incident: `{inc['id']}`", kind="bad")
-        await sec_alert(guild, f"🚨 {label} burst — incident `{inc['id']}`", embed=em)
+        em = bm.ui.embed(f"🚨 Possible nuke — {label}",
+                         f"**{len(dq)}×** in the last **{window}s** (threshold {threshold}).",
+                         "error", footer="Wigglesworth • security")
+        em.add_field(name="🎯 Target", value=target_desc[:160] or "—", inline=False)
+        em.add_field(name="🕵️ Suspect",
+                     value=(f"**{actor['name']}** (`{actor_id}`) — {note}" if actor
+                            else f"unknown — {note}"),
+                     inline=False)
+        em.add_field(name="📁 Incident", value=f"`{inc['id']}`", inline=True)
+        await sec_alert(guild, "", embed=em)
     except Exception as exc:
         record_attempt(inc, "alert staff", False, str(exc)[:120])
     else:
@@ -520,11 +524,15 @@ async def _on_role_update(before, after) -> None:
                     evidence=[f"{p}: {b} → {a}" for p, b, a in changes] +
                              [f"Actor: {(actor or {}).get('name', 'unknown')} — {note}"])
                 try:
-                    em = bm.E("⚠️ Sensitive permission change",
-                              f"Role **{after.name}**: {why}\n"
-                              f"By: {(actor or {}).get('name', 'unknown')} — {note}\n"
-                              f"Incident: `{inc['id']}`", kind="bad")
-                    await sec_alert(guild, f"⚠️ perm change @{after.name} — `{inc['id']}`", embed=em)
+                    em = bm.ui.embed(f"⚠️ Permission change — @{after.name}",
+                                     f"The role's permissions changed: **{why}**.",
+                                     "error" if "administrator" in why else "warning",
+                                     footer="Wigglesworth • security")
+                    em.add_field(name="🕵️ Changed by",
+                                 value=f"**{(actor or {}).get('name', 'unknown')}** — {note}",
+                                 inline=False)
+                    em.add_field(name="📁 Incident", value=f"`{inc['id']}`", inline=True)
+                    await sec_alert(guild, "", embed=em)
                     record_attempt(inc, "alert staff", True)
                 except Exception as exc:
                     record_attempt(inc, "alert staff", False, str(exc)[:120])
