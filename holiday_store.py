@@ -52,6 +52,39 @@ class HolidayStore:
         return g.setdefault('accounts', {}).setdefault(str(uid), {'earned': 0, 'balance': 0})
 
     @staticmethod
+    def board_key(now):
+        local = now.astimezone(PHOENIX)
+        return f'{local:%Y-%m-%d}:{local.hour // 2}'
+
+    @classmethod
+    def award(cls, g, uid, amount, now):
+        a = cls.account(g, uid)
+        a['earned'] += amount
+        a['balance'] += amount
+        key = cls.board_key(now)
+        if g.get('snowflake_board', {}).get('window') != key:
+            g['snowflake_board'] = {'window': key, 'scores': {}}
+        scores = g['snowflake_board']['scores']
+        scores[str(uid)] = scores.get(str(uid), 0) + amount
+
+    def grant(self, gid, uid, amount, actor, reason, request_id, now):
+        def op(g):
+            if not isinstance(amount, int) or not 1 <= amount <= 100000 or not reason.strip():
+                raise LedgerError('Enter 1–100,000 Snowflakes and a reason.')
+            grants = g.setdefault('grants', {})
+            if str(request_id) in grants:
+                raise LedgerError('This grant has already been applied.')
+            self.award(g, uid, amount, now)
+            grants[str(request_id)] = {'user': uid, 'amount': amount, 'actor': actor, 'reason': reason, 'at': now.timestamp()}
+        self.change(gid, op)
+
+    def leaderboard(self, gid, now):
+        board = self.guild(gid).get('snowflake_board', {})
+        if board.get('window') != self.board_key(now):
+            return []
+        return sorted(board['scores'].items(), key=lambda pair: (-pair[1], int(pair[0])))
+
+    @staticmethod
     def period(g, challenge, now):
         start = datetime(g['year'], 11, 2, tzinfo=PHOENIX)
         days = (now.astimezone(PHOENIX) - start).days
@@ -87,7 +120,7 @@ class HolidayStore:
             c.update(status='pending', hashes=hashes, submitted=now.timestamp())
         self.change(gid, op)
 
-    def review_claim(self, gid, key, reviewer, approved, reason=''):
+    def review_claim(self, gid, key, reviewer, approved, reason='', now=None):
         def op(g):
             c = g['claims'][key]
             if c['user'] == reviewer:
@@ -96,9 +129,7 @@ class HolidayStore:
                 raise LedgerError('This submission is not awaiting review.')
             c.update(status='approved' if approved else 'rejected', reviewer=reviewer, reason=reason)
             if approved:
-                a = self.account(g, c['user'])
-                a['earned'] += c['points']
-                a['balance'] += c['points']
+                self.award(g, c['user'], c['points'], now or datetime.now(timezone.utc))
             return c
         return self.change(gid, op)
 

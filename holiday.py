@@ -181,11 +181,8 @@ def setup(bm):
             try:
                 key = ledger.request_order(i.guild_id, i.user.id, self.picker.values[0], now())
                 order = ledger.guild(i.guild_id)['orders'][key]
-                thread = await open_post(i, f'Purchase · {i.user.display_name} · {order["item"]}', f'**Staff member:** <@{i.user.id}>\n**Reward:** {order["item"]}\n**Cost:** {order["cost"]} Snowflakes\n\nAwaiting management approval. No balance has been deducted yet. Purchases are final once approved; management delivers the reward separately.', 'orders', key)
-                await reply(i, f'Purchase request created: {thread.mention}')
+                await reply(i, f'Request **{key}** saved: **{order["item"]}** for **{order["cost"]} Snowflakes**.\nManagement will review it in their purchase panel. No Snowflakes have been deducted yet. Check My Holiday Pass for its status.')
             except (LedgerError, discord.HTTPException, OSError) as e:
-                if key and not ledger.guild(i.guild_id)['orders'][key].get('thread'):
-                    ledger.change(i.guild_id, lambda g: g['orders'].pop(key, None))
                 await reply(i, str(e), True)
 
     class HolidayPanel(discord.ui.View):
@@ -212,6 +209,9 @@ def setup(bm):
             recent = [f'[ {c.get("title", c.get("item", "Submission"))} · {c["status"]} ](https://discord.com/channels/{i.guild_id}/{c["thread"]})' for kind in ('claims', 'orders') for c in g[kind].values() if c['user'] == i.user.id and c.get('thread')]
             if recent:
                 em.add_field(name='Recent submissions & purchases', value='\n'.join(recent[-5:])[:1024], inline=False)
+            orders = [(key, o) for key, o in g['orders'].items() if o['user'] == i.user.id]
+            if orders:
+                em.add_field(name='My purchases', value='\n'.join(f'`{key}` · {o["item"]} · **{o["status"]}**' for key, o in orders[-5:])[:1024], inline=False)
             await i.response.send_message(embed=em, ephemeral=True)
 
         @discord.ui.button(label='Challenges & proof', custom_id='holiday:challenges:v1')
@@ -227,7 +227,7 @@ def setup(bm):
         async def shop(self, i, button):
             if not ledger.active(ledger.guild(i.guild_id), now()):
                 return await reply(i, 'The Holiday Shop is closed.', True)
-            await i.response.send_message(embed=ui.info('Choose an item to request a purchase in the proof forum. Management checks your balance, approves the purchase, and delivers the reward. Purchases are final once approved. Spending never reduces your pass level.', 'Holiday shop'), view=ShopPicker(i.user.id), ephemeral=True)
+            await i.response.send_message(embed=ui.info('Choose an item to send a purchase request to management’s queue. No forum post is created. Management approves it and delivers the reward. Purchases are final once approved. Spending never reduces your pass level.', 'Holiday shop'), view=ShopPicker(i.user.id), ephemeral=True)
 
     class ChallengeModal(discord.ui.Modal, title='Add a Holiday challenge'):
         name = discord.ui.TextInput(label='Challenge name', max_length=80)
@@ -447,6 +447,8 @@ def setup(bm):
 
     bm.bot.add_view(HolidayPanel())
     bm.bot.add_view(ReviewPanel())
+    import holiday_management
+    holiday_management.setup(bm, ledger, owner, management, staff, now, reply)
 
     async def send_requested_announcement():
         """One explicitly requested announcement, never repeated on restarts."""

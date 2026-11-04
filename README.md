@@ -47,6 +47,23 @@ font, and button appearance.
 
 ### Holiday Pass (2026 season)
 
+Management opens `.holidaymanage` (or `.holidayorders`) and clicks **Open management
+panel** for a private purchase queue. Select an order to approve/reject it or mark
+an approved reward delivered. Open orders and history have pagination. Existing
+forum-based purchases are also visible here; new shop requests create no forum
+posts. Staff can see recent purchase statuses under **My Holiday Pass**.
+
+Configured bot owners also see a **Grant Snowflakes** member picker in that panel.
+Choose a current staff member, enter an amount and reason. Grants increase lifetime
+earnings and spendable balance, are recorded in the ledger, and cannot be applied
+twice from the same submission.
+
+`.snowflakeleaderboard` (alias `.snowboard`) posts a ranking for Snowflakes earned
+in the current two-hour round. Rounds reset at 00:00, 02:00, 04:00, etc. in
+America/Phoenix; grants and challenge approvals both count. Pass levels and wallet
+balances never reset. The latest posted board refreshes automatically each minute
+and has a manual Refresh button. Earlier boards can be refreshed manually.
+
 Run `.holidaysetup` as a configured bot owner. Use the role pickers for eligible
 staff and management reviewers, select a **Forum Channel**, add challenges, and
 post the staff panel in the current channel. Use a staff-only forum with required

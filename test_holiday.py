@@ -80,6 +80,31 @@ class LedgerTests(unittest.TestCase):
             self.store.create_claim(1, 2, 'secret', NOV)
 
 
+class GrantTests(unittest.TestCase):
+    setUp = LedgerTests.setUp
+    tearDown = LedgerTests.tearDown
+    def test_grants_and_two_hour_reset_preserve_balance(self):
+        from datetime import timedelta
+        self.store.grant(1, 2, 250, 1, 'Event help', 'one', NOV)
+        self.assertEqual(self.store.leaderboard(1, NOV), [('2', 250)])
+        with self.assertRaises(LedgerError):
+            self.store.grant(1, 2, 250, 1, 'Event help', 'one', NOV)
+        later = NOV + timedelta(hours=2)
+        self.assertEqual(self.store.leaderboard(1, later), [])
+        self.assertEqual(self.store.guild(1)['accounts']['2'], {'earned': 250, 'balance': 250})
+        self.store.grant(1, 4, 40, 1, 'New round', 'two', later)
+        self.assertEqual(self.store.leaderboard(1, later), [('4', 40)])
+
+    def test_purchase_requires_no_forum(self):
+        self.store.grant(1, 2, 500, 1, 'Bonus', 'bonus', NOV)
+        key = self.store.request_order(1, 2, 'gold500', NOV)
+        self.assertIsNone(self.store.guild(1)['orders'][key]['thread'])
+        self.assertEqual(self.store.guild(1)['accounts']['2']['balance'], 500)
+        self.store.review_order(1, key, 3, 'approved', NOV)
+        self.store.review_order(1, key, 3, 'delivered', NOV)
+        self.assertEqual(self.store.guild(1)['accounts']['2']['balance'], 350)
+
+
 class UIRegistrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_quick_setup_two_role_choices_and_prefilled_forum(self):
         import discord
@@ -123,11 +148,12 @@ class UIRegistrationTests(unittest.IsolatedAsyncioTestCase):
             holiday.setup(module)
             await bot._holiday_announcement_task
             self.assertIsNotNone(bot.get_command('holidaysetup'))
-            self.assertEqual(len(bot.persistent_views), 2)
+            self.assertEqual(len(bot.persistent_views), 3)
             self.assertTrue(all(v.is_persistent() for v in bot.persistent_views))
             await bot.close()
 
 
 if __name__ == '__main__':
     unittest.main()
+
 
