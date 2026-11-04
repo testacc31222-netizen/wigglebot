@@ -13,7 +13,7 @@ def matching_channel(channels, name):
     return matches[0] if len(matches) == 1 else None
 
 
-def setup(bm, ledger, owner, management, staff, now, reply, shop_factory=None):
+def setup(bm, ledger, owner, management, staff, now, reply, shop_factory=None, pass_factory=None):
     def board_embed(gid):
         scores = ledger.leaderboard(gid, now())[:15]
         local = now().astimezone(PHOENIX)
@@ -215,5 +215,32 @@ def setup(bm, ledger, owner, management, staff, now, reply, shop_factory=None):
                 print(f'[holiday-panels] could not confirm {name}: {type(exc).__name__}')
 
     bm.bot._holiday_surface_task = asyncio.create_task(post_requested_panels())
+
+    async def post_requested_proof_panel():
+        await bm.bot.wait_until_ready()
+        guild = bm.bot.get_guild(1551097539804008580)
+        if guild is None or pass_factory is None or ledger.guild(guild.id).get('requested_community_proof_panel'):
+            return
+        channel = matching_channel(guild.text_channels, 'holiday-pass')
+        forum = guild.get_channel(ledger.guild(guild.id).get('forum') or 1566963036236025956)
+        if channel is None or not isinstance(forum, discord.ForumChannel):
+            print('[holiday-proof-panel] missing holiday-pass channel or submissions forum')
+            return
+        try:
+            from holiday_defaults import COMMUNITY_CHALLENGES
+            def enable(g):
+                g.update(participation='community', forum=forum.id)
+                for cid, (name, task, points, cadence) in COMMUNITY_CHALLENGES.items():
+                    g['challenges'].setdefault(cid, {'name': name, 'instructions': task, 'points': points, 'cadence': cadence, 'enabled': True, 'audience': 'community'})
+            ledger.change(guild.id, enable)
+            message = await channel.send(embed=ui.embed('Community Holiday Pass', '**Submit your proof in three steps**\n\n1. Select **Challenges & proof** below.\n2. Choose your challenge to open a post in ' + forum.mention + '.\n3. Upload your screenshots or video in that post, then click **Submit proof for review**.\n\nManagement reviews your evidence before awarding Snowflakes. Check **My Holiday Pass** for your progress and request status.\n\n**100 Snowflakes = 1 level.** Everyone in the community can participate.', 'brand'), view=pass_factory(), allowed_mentions=discord.AllowedMentions.none())
+            ledger.change(guild.id, lambda g: g.update(requested_community_proof_panel=message.id))
+            perms = forum.permissions_for(guild.default_role)
+            accessible = perms.view_channel and perms.send_messages_in_threads and perms.attach_files and perms.read_message_history
+            print(f'[holiday-proof-panel] posted channel={channel.id} message={message.id} forum={forum.id} everyone_can_submit={accessible}')
+        except (discord.HTTPException, OSError) as exc:
+            print(f'[holiday-proof-panel] could not confirm posting: {type(exc).__name__}')
+
+    bm.bot._holiday_proof_surface_task = asyncio.create_task(post_requested_proof_panel())
 
 

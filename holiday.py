@@ -480,7 +480,7 @@ def setup(bm):
                 view.remove_item(child)
         view.shop.label = 'Browse Holiday Shop'
         return view
-    holiday_management.setup(bm, ledger, owner, management, staff, now, reply, shop_surface)
+    holiday_management.setup(bm, ledger, owner, management, staff, now, reply, shop_surface, HolidayPanel)
 
     async def send_requested_announcement():
         """One explicitly requested announcement, never repeated on restarts."""
