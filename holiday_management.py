@@ -1,5 +1,6 @@
 """Owner grants, management fulfilment queue and rotating Snowflake rankings."""
 import asyncio
+import re
 from datetime import timedelta
 import discord
 from discord.ext import commands
@@ -7,7 +8,12 @@ import ui
 from holiday_store import LedgerError, PHOENIX
 
 
-def setup(bm, ledger, owner, management, staff, now, reply):
+def matching_channel(channels, name):
+    matches = [c for c in channels if re.sub(r'[^a-z0-9]+', '-', c.name.lower()).strip('-') == name]
+    return matches[0] if len(matches) == 1 else None
+
+
+def setup(bm, ledger, owner, management, staff, now, reply, shop_factory=None):
     def board_embed(gid):
         scores = ledger.leaderboard(gid, now())[:15]
         local = now().astimezone(PHOENIX)
@@ -177,5 +183,37 @@ def setup(bm, ledger, owner, management, staff, now, reply):
             await asyncio.sleep(60)
 
     bm.bot._holiday_board_task = asyncio.create_task(update_boards())
+
+    async def post_requested_panels():
+        """Post the two panels requested by the server owner; preserve settings."""
+        await bm.bot.wait_until_ready()
+        guild = bm.bot.get_guild(1551097539804008580)
+        if guild is None or shop_factory is None:
+            return
+        for name, flag in [('holiday-pass', 'requested_pass_board_posted'), ('holiday-shop', 'requested_shop_panel_posted')]:
+            if ledger.guild(guild.id).get(flag):
+                continue
+            channel = matching_channel(guild.text_channels, name)
+            if channel is None:
+                print(f'[holiday-panels] need unique channel {name}; available: ' + ', '.join(c.name for c in guild.text_channels))
+                continue
+            try:
+                g = ledger.guild(guild.id)
+                if name == 'holiday-pass' and g.get('board_channel') == channel.id and g.get('board_message'):
+                    message = await channel.fetch_message(g['board_message'])
+                    await message.edit(embed=board_embed(guild.id), view=Board())
+                elif name == 'holiday-pass':
+                    message = await channel.send(embed=board_embed(guild.id), view=Board(), allowed_mentions=discord.AllowedMentions.none())
+                else:
+                    message = await channel.send(embed=ui.embed('Holiday Shop', 'Spend Snowflakes on gold, holiday rewards, and community perks.\n\nSelect **Browse Holiday Shop** to see rewards and prices. Requests go to management for approval and delivery.\n\nSpending never lowers your Holiday Pass level.', 'brand'), view=shop_factory(), allowed_mentions=discord.AllowedMentions.none())
+                changes = {flag: message.id}
+                if name == 'holiday-pass':
+                    changes.update(board_message=message.id, board_channel=channel.id)
+                ledger.change(guild.id, lambda data: data.update(changes))
+                print(f'[holiday-panels] posted {name} channel={channel.id} message={message.id}')
+            except (discord.HTTPException, OSError) as exc:
+                print(f'[holiday-panels] could not confirm {name}: {type(exc).__name__}')
+
+    bm.bot._holiday_surface_task = asyncio.create_task(post_requested_panels())
 
 

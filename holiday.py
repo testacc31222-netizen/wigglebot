@@ -473,7 +473,14 @@ def setup(bm):
     bm.bot.add_view(HolidayPanel())
     bm.bot.add_view(ReviewPanel())
     import holiday_management
-    holiday_management.setup(bm, ledger, owner, management, staff, now, reply)
+    def shop_surface():
+        view = HolidayPanel()
+        for child in list(view.children):
+            if child.custom_id != 'holiday:shop:v1':
+                view.remove_item(child)
+        view.shop.label = 'Browse Holiday Shop'
+        return view
+    holiday_management.setup(bm, ledger, owner, management, staff, now, reply, shop_surface)
 
     async def send_requested_announcement():
         """One explicitly requested announcement, never repeated on restarts."""
