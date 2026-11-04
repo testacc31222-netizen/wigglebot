@@ -95,6 +95,10 @@ def setup(bm):
             super().__init__(uid)
             self.role_ids = []
             self.channel_id = None
+            self.role_error = ''
+
+        def refresh_save(self):
+            self.save.disabled = not (self.role_ids and self.channel_id and not self.role_error)
 
         async def interaction_check(self, interaction):
             if not await super().interaction_check(interaction):
@@ -108,21 +112,29 @@ def setup(bm):
             em = ui.embed('Staff departure · Setup', '1. Choose roles to remove.\n2. Choose the staff channel.\n3. Review your choices and post the panel.', 'brand')
             em.add_field(name='Roles to remove', value=', '.join(f'<@&{rid}>' for rid in self.role_ids) or 'Choose below', inline=False)
             em.add_field(name='Panel channel', value=f'<#{self.channel_id}>' if self.channel_id else 'Choose below', inline=False)
+            if self.role_error:
+                em.add_field(name='Role setup needs attention', value=self.role_error, inline=False)
             return em
 
         @discord.ui.select(cls=discord.ui.RoleSelect, placeholder='Choose staff roles to remove', min_values=1, max_values=25, row=0)
         async def roles(self, interaction, select):
-            if any(not removable(r, interaction.guild) for r in select.values):
-                return await interaction.response.send_message(embed=ui.err('Choose normal roles below the bot’s highest role.'), ephemeral=True)
-            self.role_ids = [r.id for r in select.values]
-            await interaction.response.edit_message(embed=self.summary())
+            invalid = [r for r in select.values if not removable(r, interaction.guild)]
+            if invalid:
+                self.role_ids = []
+                self.role_error = ('Cannot remove: ' + ', '.join(r.mention for r in invalid) + '.\nMove the bot’s highest role above these roles in Server Settings → Roles. Managed integration roles and @everyone cannot be used. Then select the roles again.')
+            else:
+                self.role_ids = [r.id for r in select.values]
+                self.role_error = ''
+            self.refresh_save()
+            await interaction.response.edit_message(embed=self.summary(), view=self)
 
         @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder='Choose where the staff panel appears', channel_types=[discord.ChannelType.text], row=1)
         async def channel(self, interaction, select):
             self.channel_id = select.values[0].id
-            await interaction.response.edit_message(embed=self.summary())
+            self.refresh_save()
+            await interaction.response.edit_message(embed=self.summary(), view=self)
 
-        @discord.ui.button(label='Save and post panel', style=discord.ButtonStyle.primary, row=2)
+        @discord.ui.button(label='Save and post panel', style=discord.ButtonStyle.primary, row=2, disabled=True)
         async def save(self, interaction, button):
             if self.busy:
                 return await interaction.response.send_message('Already processing.', ephemeral=True)
@@ -278,4 +290,5 @@ def setup(bm):
         if not publisher(ctx.author.id, ctx.guild.id):
             return await ctx.send(embed=ui.err('Only bot owners and the separate update owner whitelist can publish updates.'))
         await ctx.send(embed=ui.embed('Publish an update', 'Which one was updated?\nChoose Discord or Wigglesworth, write your message, then review it before publishing.', 'brand'), view=UpdatePicker(ctx.author.id))
+
 

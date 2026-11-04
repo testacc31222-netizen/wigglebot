@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace as NS
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 import discord
 from discord.ext import commands
 import staff_tools
@@ -48,6 +48,23 @@ class StaffToolsTests(unittest.IsolatedAsyncioTestCase):
         self.ctx.author.id = 2
         await self.invoke('staffquitsetup')
         self.assertNotIn('view', self.ctx.send.call_args.kwargs)
+
+    async def test_invalid_role_is_named_and_save_disabled(self):
+        await self.invoke('staffquitsetup')
+        view = self.ctx.send.call_args.kwargs['view']
+        select = next(c for c in view.children if isinstance(c, discord.ui.RoleSelect))
+        select._values = [NS(id=40, mention='<@&40>')]
+        intr = NS(guild=NS(id=10), response=NS(edit_message=AsyncMock()))
+        with patch('staff_tools.removable', return_value=False):
+            await select.callback(intr)
+        self.assertTrue(view.save.disabled)
+        self.assertIn('<@&40>', view.role_error)
+        self.assertIs(intr.response.edit_message.call_args.kwargs['view'], view)
+        view.channel_id = 55
+        with patch('staff_tools.removable', return_value=True):
+            await select.callback(intr)
+        self.assertFalse(view.save.disabled)
+        self.assertEqual(view.role_ids, [40])
 
     async def test_quit_requires_own_confirmation_and_checks_config(self):
         self.cfg['staff_quit_role_ids'] = [40]
