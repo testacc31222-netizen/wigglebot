@@ -14,6 +14,7 @@ the bot module — bot.py imports *this*.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 
 import discord
 
@@ -46,11 +47,25 @@ DIVIDER = "━━━━━━━━━━━━━━"
 
 # bar themes: (filled, empty)
 _BARS = {
-    "xp": ("🟪", "⬛"),
-    "msg": ("🟦", "⬛"),
-    "vote": ("🟩", "⬛"),
-    "gold": ("🟨", "⬛"),
+    "xp": ("▰", "▱"),
+    "msg": ("▰", "▱"),
+    "vote": ("▰", "▱"),
+    "gold": ("▰", "▱"),
 }
+
+
+def label(text):
+    """Keep user content intact; remove decorative emoji from chrome labels."""
+    return re.sub(r'[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]', '', str(text)).strip()
+
+
+class Card(discord.Embed):
+    """Shared label treatment without changing card fields or their layout."""
+    def add_field(self, *, name, value, inline=True):
+        return super().add_field(name=label(name) or '\u200b', value=value, inline=inline)
+
+    def set_author(self, *, name, **kwargs):
+        return super().set_author(name=label(name), **kwargs)
 
 GLYPHS = {"ok": "✅", "err": "❌", "warn": "⚠️", "info": "ℹ️", "tip": "💡"}
 
@@ -130,7 +145,7 @@ def cut(text: str, limit: int) -> str:
 def embed(title: str = "", desc: str = "", kind: str = "info", *,
           footer: str | None = None, timestamp: bool = True) -> discord.Embed:
     """Standard Wigglesworth embed: palette color, footer, UTC timestamp."""
-    e = discord.Embed(title=title or None, description=desc or None,
+    e = Card(title=label(title) or None, description=desc or None,
                       color=color(kind))
     if timestamp:
         e.timestamp = now()
@@ -342,3 +357,4 @@ def xp_info_embed(*, lo: int, hi: int, cooldown: int, min_length: int,
                "`.messages` — your message statistics"),
         inline=False)
     return e
+

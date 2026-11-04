@@ -19,6 +19,7 @@ import security
 import community
 import stats
 import ui
+import staff_tools
 
 load_dotenv()
 
@@ -674,6 +675,7 @@ async def on_ready() -> None:
     import sys as _sys
     security.setup(_sys.modules[__name__])  # idempotent; registers security listeners
     community.setup(_sys.modules[__name__])  # idempotent; commands, views, scheduler
+    staff_tools.setup(_sys.modules[__name__])
     bot.add_view(VerifyView())  # keep the ✅ button alive across restarts
     rr_register_saved()  # re-arm role menus (defined below, resolved at runtime)
     if not qotd_loop.is_running():
@@ -4363,3 +4365,4 @@ if __name__ == "__main__":
             _save_xp(xp_data)
         except OSError:
             pass
+
