@@ -22,7 +22,7 @@ def setup(bm, ledger, owner, management, staff, now, reply):
         @discord.ui.button(label='Refresh leaderboard', custom_id='holiday:board:refresh:v1')
         async def refresh(self, i, button):
             if not staff(i.user) and not management(i.user):
-                return await reply(i, 'Staff only.', True)
+                return await reply(i, 'Holiday Pass participants only.', True)
             await i.response.edit_message(embed=board_embed(i.guild_id))
 
     class GrantModal(discord.ui.Modal, title='Grant Snowflakes'):
@@ -40,7 +40,7 @@ def setup(bm, ledger, owner, management, staff, now, reply):
             try:
                 member = await i.guild.fetch_member(self.uid)
                 if not staff(member):
-                    raise LedgerError('Choose a current staff participant.')
+                    raise LedgerError('Choose an eligible Holiday Pass participant.')
                 amount = int(self.amount.value)
                 ledger.grant(i.guild_id, self.uid, amount, i.user.id, self.reason.value, i.id, now())
                 await reply(i, f'Granted **{amount:,} Snowflakes** to <@{self.uid}>. Their pass progress, balance, and current leaderboard earnings have been updated.')
@@ -124,7 +124,7 @@ def setup(bm, ledger, owner, management, staff, now, reply):
             refresh.callback = reload
             self.add_item(refresh)
             if owner(self.uid):
-                member = discord.ui.UserSelect(placeholder='Grant Snowflakes · choose a staff member', row=3)
+                member = discord.ui.UserSelect(placeholder='Grant Snowflakes · choose a participant', row=3)
                 async def grant(i):
                     if not owner(i.user.id):
                         return await reply(i, 'Bot owners only.', True)
@@ -153,7 +153,7 @@ def setup(bm, ledger, owner, management, staff, now, reply):
     @commands.guild_only()
     async def leaderboard(ctx):
         if not staff(ctx.author) and not management(ctx.author):
-            return await ctx.send(embed=ui.err('Staff only.'))
+            return await ctx.send(embed=ui.err('Holiday Pass participants only.'))
         message = await ctx.send(embed=board_embed(ctx.guild.id), view=Board(), allowed_mentions=discord.AllowedMentions.none())
         ledger.change(ctx.guild.id, lambda g: g.update(board_message=message.id, board_channel=ctx.channel.id))
 
@@ -177,4 +177,5 @@ def setup(bm, ledger, owner, management, staff, now, reply):
             await asyncio.sleep(60)
 
     bm.bot._holiday_board_task = asyncio.create_task(update_boards())
+
 

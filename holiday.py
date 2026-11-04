@@ -9,6 +9,7 @@ from discord.ext import commands
 import ui
 from holiday_store import HolidayStore, LedgerError, SHOP, PHOENIX
 from holiday_defaults import MILESTONES, ANNOUNCEMENT, ANNOUNCEMENT_CHANNEL, ANNOUNCEMENT_GUILD, ANNOUNCEMENT_ROLE
+from holiday_defaults import COMMUNITY_CHALLENGES, eligible, visible_challenge
 
 
 def setup(bm):
@@ -21,7 +22,7 @@ def setup(bm):
         return uid in bm.OWNER_IDS
 
     def staff(member):
-        return any(r.id in ledger.guild(member.guild.id)['staff_roles'] for r in member.roles)
+        return eligible(member, ledger.guild(member.guild.id))
 
     def management(member):
         return owner(member.id) or any(r.id in ledger.guild(member.guild.id)['review_roles'] for r in member.roles)
@@ -82,7 +83,7 @@ def setup(bm):
             try:
                 kind, key, item = lookup(i)
                 if kind != 'claims' or item['user'] != i.user.id or not staff(i.user):
-                    raise LedgerError('Only the staff member who opened this challenge post can submit it.')
+                    raise LedgerError('Only the participant who opened this challenge post can submit it.')
                 if item['status'] != 'draft':
                     raise LedgerError('This submission has already been sent for review.')
                 hashes = []
@@ -144,7 +145,7 @@ def setup(bm):
         def __init__(self, uid, gid):
             super().__init__(uid)
             g = ledger.guild(gid)
-            options = [discord.SelectOption(label=c['name'][:100], value=cid, description=f'{c["points"]} Snowflakes · {c["cadence"]}') for cid, c in g['challenges'].items() if c.get('enabled', True) and (not c.get('expires') or c['expires'] > now().timestamp())]
+            options = [discord.SelectOption(label=c['name'][:100], value=cid, description=f'{c["points"]} Snowflakes · {c["cadence"]}') for cid, c in g['challenges'].items() if visible_challenge(cid, c, g) and c.get('enabled', True) and (not c.get('expires') or c['expires'] > now().timestamp())]
             picker = discord.ui.Select(placeholder='Choose a challenge', options=options[:25])
             picker.callback = self.choose
             self.add_item(picker)
@@ -158,7 +159,7 @@ def setup(bm):
             try:
                 key = ledger.create_claim(i.guild_id, i.user.id, self.picker.values[0], now())
                 claim = ledger.guild(i.guild_id)['claims'][key]
-                thread = await open_post(i, f'Proof · {i.user.display_name} · {claim["title"]}', f'**Staff member:** <@{i.user.id}>\n**Challenge:** {claim["title"]}\n**Reward:** {claim["points"]} Snowflakes\n**Task:** {claim.get("instructions", "Follow the challenge announcement.")}\n\nUpload screenshot/video evidence as a reply in this post, then click **Submit proof for review**. Only management can approve it.', 'claims', key)
+                thread = await open_post(i, f'Proof · {i.user.display_name} · {claim["title"]}', f'**Participant:** <@{i.user.id}>\n**Challenge:** {claim["title"]}\n**Reward:** {claim["points"]} Snowflakes\n**Task:** {claim.get("instructions", "Follow the challenge announcement.")}\n\nUpload screenshot/video evidence as a reply in this post, then click **Submit proof for review**. Only management can approve it.', 'claims', key)
                 await reply(i, f'Your proof post is ready: {thread.mention}\nUpload your evidence there, then submit it for review.')
             except (LedgerError, discord.HTTPException, OSError) as e:
                 if key and not ledger.guild(i.guild_id)['claims'][key].get('thread'):
@@ -175,7 +176,7 @@ def setup(bm):
 
         async def choose(self, i):
             if not staff(i.user):
-                return await reply(i, 'This shop is for staff participants.', True)
+                return await reply(i, 'This shop is for eligible Holiday Pass participants.', True)
             await i.response.defer(ephemeral=True)
             key = None
             try:
@@ -191,7 +192,7 @@ def setup(bm):
 
         async def interaction_check(self, i):
             if not i.guild or not staff(i.user):
-                await reply(i, 'This optional Holiday Pass is for configured staff roles.', True)
+                await reply(i, 'You are not eligible for this Holiday Pass. Ask an owner to check participation settings.', True)
                 return False
             return True
 
@@ -204,7 +205,7 @@ def setup(bm):
             em.add_field(name='Lifetime Snowflakes', value=f'{a["earned"]:,}')
             em.add_field(name='Spendable balance', value=f'{a["balance"]:,}')
             em.add_field(name='Level 20 reward', value='Eligible — contact management to claim.' if level >= 20 else f'{max(0, 2000-a["earned"]):,} more Snowflakes needed.', inline=False)
-            em.add_field(name='Milestone rewards · management delivery', value='\n'.join(f'{"Unlocked" if level >= lvl else "Level " + str(lvl)} · {reward}' for lvl, reward in MILESTONES), inline=False)
+            em.add_field(name='Milestone rewards · management delivery', value='\n'.join(f'{"Unlocked" if level >= lvl else "Level " + str(lvl)} · {reward.replace("Holiday Staff Reward", "Holiday Community Reward") if g.get("participation") == "community" else reward}' for lvl, reward in MILESTONES), inline=False)
             em.add_field(name='Season', value=f'November 2 – December 31, {g["year"]} · America/Phoenix\nSpending does not lower your level. November progress carries into December.', inline=False)
             recent = [f'[ {c.get("title", c.get("item", "Submission"))} · {c["status"]} ](https://discord.com/channels/{i.guild_id}/{c["thread"]})' for kind in ('claims', 'orders') for c in g[kind].values() if c['user'] == i.user.id and c.get('thread')]
             if recent:
@@ -341,6 +342,7 @@ def setup(bm):
             super().__init__(uid)
             g = ledger.guild(guild.id)
             self.staff_ids = list(g['staff_roles'])
+            self.participation = g.get('participation', 'roles')
             self.reviewer_ids = list(g['review_roles'])
             self.forum_id = g['forum'] or (1566963036236025956 if guild.id == ANNOUNCEMENT_GUILD else None)
             self.step = 0
@@ -352,19 +354,21 @@ def setup(bm):
 
         def summary(self):
             if self.step == 0:
-                desc = '**Step 1 of 2 · Who can participate?**\nChoose the staff role below. You can select multiple roles if needed.'
+                desc = '**Step 1 of 2 · Who can participate?**\nClick **Everyone in the community** or choose specific roles below.'
             elif self.step == 1:
                 desc = '**Step 2 of 2 · Who approves proof?**\nChoose your management role below.'
             else:
                 desc = '**Ready to start.**\nYour eight challenges, shop prices, and level rewards are already included.'
             em = ui.embed('Holiday Pass · Quick setup', desc, 'brand')
-            if self.staff_ids:
-                em.add_field(name='Staff', value=' '.join(f'<@&{rid}>' for rid in self.staff_ids)[:1024], inline=False)
+            if self.participation == 'community':
+                em.add_field(name='Participants', value='Everyone in the community · new community challenges', inline=False)
+            elif self.staff_ids:
+                em.add_field(name='Participants', value=' '.join(f'<@&{rid}>' for rid in self.staff_ids)[:1024], inline=False)
             if self.reviewer_ids:
                 em.add_field(name='Management', value=' '.join(f'<@&{rid}>' for rid in self.reviewer_ids)[:1024], inline=False)
             em.add_field(name='Proof forum', value=f'<#{self.forum_id}>' if self.forum_id else 'Choose a forum below', inline=False)
             if self.step == 2:
-                em.add_field(name='Staff panel', value='Will be posted in this channel. No new announcement ping.', inline=False)
+                em.add_field(name='Holiday panel', value='Will be posted in this channel. No new announcement ping.', inline=False)
             return em
 
         def render(self):
@@ -375,6 +379,7 @@ def setup(bm):
                     if any(r.is_default() for r in picker.values):
                         return await reply(i, 'Choose a staff or management role, not @everyone.', True)
                     if self.step == 0:
+                        self.participation = 'roles'
                         self.staff_ids = [r.id for r in picker.values]
                     else:
                         self.reviewer_ids = [r.id for r in picker.values]
@@ -383,6 +388,15 @@ def setup(bm):
                     await i.response.edit_message(embed=self.summary(), view=self)
                 picker.callback = choose
                 self.add_item(picker)
+                if self.step == 0:
+                    community = discord.ui.Button(label='Everyone in the community', style=discord.ButtonStyle.primary)
+                    async def everyone(i):
+                        self.participation = 'community'
+                        self.step = 1
+                        self.render()
+                        await i.response.edit_message(embed=self.summary(), view=self)
+                    community.callback = everyone
+                    self.add_item(community)
             else:
                 finish = discord.ui.Button(label='Start Holiday Pass', style=discord.ButtonStyle.success)
                 finish.callback = self.finish
@@ -414,10 +428,15 @@ def setup(bm):
             forum = i.guild.get_channel(self.forum_id or 0)
             if not isinstance(forum, discord.ForumChannel):
                 return await reply(i, 'Choose a proof forum using the optional forum picker.', True)
-            if not self.staff_ids or not self.reviewer_ids or any(i.guild.get_role(rid) is None for rid in self.staff_ids + self.reviewer_ids):
+            if (self.participation != 'community' and not self.staff_ids) or not self.reviewer_ids or any(i.guild.get_role(rid) is None for rid in self.reviewer_ids + (self.staff_ids if self.participation != 'community' else [])):
                 return await reply(i, 'A selected role is missing. Go Back and select it again.', True)
             perms = forum.permissions_for(i.guild.me)
             panel_perms = i.channel.permissions_for(i.guild.me)
+            if self.participation == 'community':
+                public_forum = forum.permissions_for(i.guild.default_role)
+                public_panel = i.channel.permissions_for(i.guild.default_role)
+                if not (public_panel.view_channel and public_forum.view_channel and public_forum.send_messages_in_threads and public_forum.attach_files and public_forum.read_message_history):
+                    return await reply(i, 'Choose a community-visible panel channel and proof forum. Members need View Channel, Read Message History, Send Messages in Threads, and Attach Files in the forum. The bot will not change channel permissions automatically.', True)
             if not (perms.view_channel and perms.send_messages and perms.send_messages_in_threads and perms.embed_links and perms.read_message_history and panel_perms.send_messages and panel_perms.embed_links):
                 return await reply(i, 'Give the bot View Channel, Send Messages, Send Messages in Threads, Embed Links, and Read Message History in the proof forum, plus Send Messages and Embed Links here.', True)
             try:
@@ -428,14 +447,20 @@ def setup(bm):
             await i.response.defer()
             old = ledger.guild(i.guild_id)
             try:
-                config(i.guild_id, staff_roles=self.staff_ids, review_roles=self.reviewer_ids, forum=self.forum_id)
-                message = await i.channel.send(embed=ui.embed('Staff Holiday Pass', 'Complete challenges. Upload proof. Earn rewards.\n\n**100 Snowflakes = 1 level.** Spending in the shop never lowers your level.\n\nUse the buttons below to get started. Participation is optional.', 'brand'), view=HolidayPanel())
+                def save(g):
+                    g.update(staff_roles=self.staff_ids, review_roles=self.reviewer_ids, forum=self.forum_id, participation=self.participation)
+                    if self.participation == 'community':
+                        for cid, (name, task, points, cadence) in COMMUNITY_CHALLENGES.items():
+                            g['challenges'].setdefault(cid, {'name': name, 'instructions': task, 'points': points, 'cadence': cadence, 'enabled': True, 'audience': 'community'})
+                ledger.change(i.guild_id, save)
+                title = 'Community Holiday Pass' if self.participation == 'community' else 'Holiday Pass'
+                message = await i.channel.send(embed=ui.embed(title, 'Complete challenges. Upload proof. Earn rewards.\n\n**100 Snowflakes = 1 level.** Spending in the shop never lowers your level.\n\nUse the buttons below to get started. Participation is optional.', 'brand'), view=HolidayPanel())
             except (discord.HTTPException, OSError):
-                config(i.guild_id, staff_roles=old['staff_roles'], review_roles=old['review_roles'], forum=old['forum'])
+                config(i.guild_id, staff_roles=old['staff_roles'], review_roles=old['review_roles'], forum=old['forum'], participation=old.get('participation', 'roles'), challenges=old['challenges'])
                 self.busy = False
                 return await i.edit_original_response(embed=ui.err('Could not post the panel. Check channel permissions and try again.'), view=self)
             self.stop()
-            await i.edit_original_response(embed=ui.ok(f'All set! [Open the staff panel]({message.jump_url}).\nStaff choose a challenge and upload proof; management approves it in the forum.', 'Holiday Pass is ready'), view=None)
+            await i.edit_original_response(embed=ui.ok(f'All set! [Open the staff panel]({message.jump_url}).\nParticipants choose a challenge and upload proof; management approves it in the forum.', 'Holiday Pass is ready'), view=None)
 
     @bm.bot.command(name='holidaysetup')
     @commands.guild_only()
@@ -473,5 +498,7 @@ def setup(bm):
             print(f'[holiday] announcement not confirmed: {type(exc).__name__}; inspect channel before manual retry')
 
     bm.bot._holiday_announcement_task = asyncio.create_task(send_requested_announcement())
+
+
 
 

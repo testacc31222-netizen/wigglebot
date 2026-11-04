@@ -3,7 +3,7 @@ import copy
 import json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from holiday_defaults import CHALLENGES
+from holiday_defaults import CHALLENGES, visible_challenge
 
 PHOENIX = timezone(timedelta(hours=-7))
 SHOP = [
@@ -93,7 +93,7 @@ class HolidayStore:
     def create_claim(self, gid, uid, cid, now):
         def op(g):
             c = g['challenges'].get(cid)
-            if not self.active(g, now) or not c or not c.get('enabled', True):
+            if not self.active(g, now) or not c or not c.get('enabled', True) or not visible_challenge(cid, c, g):
                 raise LedgerError('This challenge is unavailable or the event is closed.')
             if c.get('expires') and now.timestamp() >= c['expires']:
                 raise LedgerError('This secret mission has expired.')

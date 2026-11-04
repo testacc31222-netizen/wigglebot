@@ -83,6 +83,22 @@ class LedgerTests(unittest.TestCase):
 class GrantTests(unittest.TestCase):
     setUp = LedgerTests.setUp
     tearDown = LedgerTests.tearDown
+
+    def test_community_access_keeps_reviews_restricted_and_filters_staff_tasks(self):
+        from types import SimpleNamespace as NS
+        from holiday_defaults import eligible, visible_challenge, COMMUNITY_CHALLENGES
+        member = NS(bot=False, roles=[])
+        g = self.store.guild(1)
+        self.assertFalse(eligible(member, g))
+        self.store.change(1, lambda data: data.update(participation='community'))
+        g = self.store.guild(1)
+        self.assertTrue(eligible(member, g))
+        self.assertFalse(eligible(NS(bot=True, roles=[]), g))
+        self.assertEqual(g['review_roles'], [])
+        self.assertFalse(visible_challenge('snow-patrol', g['challenges']['snow-patrol'], g))
+        with self.assertRaises(LedgerError):
+            self.store.create_claim(1, 2, 'snow-patrol', NOV)
+        self.assertEqual(len(COMMUNITY_CHALLENGES), 8)
     def test_grants_and_two_hour_reset_preserve_balance(self):
         from datetime import timedelta
         self.store.grant(1, 2, 250, 1, 'Event help', 'one', NOV)
