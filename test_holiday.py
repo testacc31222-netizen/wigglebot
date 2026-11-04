@@ -81,6 +81,34 @@ class LedgerTests(unittest.TestCase):
 
 
 class UIRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quick_setup_two_role_choices_and_prefilled_forum(self):
+        import discord
+        import holiday
+        from discord.ext import commands
+        from types import SimpleNamespace as NS
+        from unittest.mock import AsyncMock
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = commands.Bot(command_prefix='.', intents=discord.Intents.none())
+            bot.wait_until_ready = AsyncMock()
+            holiday.setup(NS(bot=bot, OWNER_IDS={1}, DATA_DIR=Path(tmp)))
+            await bot._holiday_announcement_task
+            ctx = NS(author=NS(id=1), guild=NS(id=1551097539804008580), send=AsyncMock())
+            await bot.get_command('holidaysetup').callback(ctx)
+            view = ctx.send.call_args.kwargs['view']
+            self.assertEqual(view.forum_id, 1566963036236025956)
+            self.assertEqual(view.step, 0)
+            intr = NS(response=NS(edit_message=AsyncMock()))
+            for rid in (40, 50):
+                picker = next(c for c in view.children if isinstance(c, discord.ui.RoleSelect))
+                picker._values = [NS(id=rid, is_default=lambda: False)]
+                await picker.callback(intr)
+            self.assertEqual(view.step, 2)
+            self.assertEqual(view.staff_ids, [40])
+            self.assertEqual(view.reviewer_ids, [50])
+            self.assertTrue(any(getattr(c, 'label', '') == 'Start Holiday Pass' for c in view.children))
+            self.assertFalse((Path(tmp) / 'holiday_pass.json').exists())
+            await bot.close()
+
     async def test_persistent_views_register_once(self):
         import discord
         import holiday

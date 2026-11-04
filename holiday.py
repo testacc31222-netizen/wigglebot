@@ -48,9 +48,18 @@ def setup(bm):
         forum = i.guild.get_channel(ledger.guild(i.guild_id)['forum'] or 0)
         if not isinstance(forum, discord.ForumChannel):
             raise LedgerError('An owner must select a proof forum in holidaysetup first.')
-        result = await forum.create_thread(name=title[:100], embed=ui.embed(title, description, 'brand'), view=ReviewPanel(), allowed_mentions=discord.AllowedMentions.none())
+        tags = usable_tags(forum)
+        result = await forum.create_thread(name=title[:100], embed=ui.embed(title, description, 'brand'), view=ReviewPanel(), applied_tags=tags, allowed_mentions=discord.AllowedMentions.none())
         ledger.change(i.guild_id, lambda g: g[kind][key].update(thread=result.thread.id))
         return result.thread
+
+    def usable_tags(forum):
+        if not forum.flags.require_tag:
+            return []
+        tags = [t for t in forum.available_tags if not t.moderated or forum.permissions_for(forum.guild.me).manage_threads]
+        if not tags:
+            raise LedgerError('The proof forum requires a tag, but no usable tags exist. Add a normal forum tag first.')
+        return tags[:1]
 
     class Personal(discord.ui.View):
         def __init__(self, uid):
@@ -296,8 +305,10 @@ def setup(bm):
             forum = i.guild.get_channel(g['forum'] or 0)
             if not g['staff_roles'] or not g['review_roles'] or not isinstance(forum, discord.ForumChannel):
                 return await reply(i, 'Select staff roles, management roles, and a proof forum first.', True)
-            if forum.flags.require_tag:
-                return await reply(i, 'Turn off “Require people to select tags” on the proof forum before posting the panel.', True)
+            try:
+                usable_tags(forum)
+            except LedgerError as e:
+                return await reply(i, str(e), True)
             await i.response.defer(ephemeral=True)
             try:
                 await i.channel.send(embed=ui.embed('Wigglesworth · Staff Holiday Pass', f'**November 2 – December 31, {g["year"]}**\n\nComplete challenges, upload proof in your forum post, and earn Snowflakes after management approval.\n\n**100 Snowflakes = 1 level**\nSpend Snowflakes in the shop without losing pass levels. Progress carries into December.\n\nParticipation is optional and does not affect your staff position. All rewards are delivered by management.', 'brand'), view=HolidayPanel())
@@ -324,15 +335,115 @@ def setup(bm):
             except (discord.HTTPException, OSError):
                 await reply(i, 'Could not confirm announcement delivery. Check the channel before trying again.', True)
 
+    class QuickSetup(Personal):
+        """Two role choices, one explicit save; advanced tools stay optional."""
+        def __init__(self, uid, guild):
+            super().__init__(uid)
+            g = ledger.guild(guild.id)
+            self.staff_ids = list(g['staff_roles'])
+            self.reviewer_ids = list(g['review_roles'])
+            self.forum_id = g['forum'] or (1566963036236025956 if guild.id == ANNOUNCEMENT_GUILD else None)
+            self.step = 0
+            self.busy = False
+            self.render()
+
+        async def interaction_check(self, i):
+            return await super().interaction_check(i) and owner(i.user.id)
+
+        def summary(self):
+            if self.step == 0:
+                desc = '**Step 1 of 2 · Who can participate?**\nChoose the staff role below. You can select multiple roles if needed.'
+            elif self.step == 1:
+                desc = '**Step 2 of 2 · Who approves proof?**\nChoose your management role below.'
+            else:
+                desc = '**Ready to start.**\nYour eight challenges, shop prices, and level rewards are already included.'
+            em = ui.embed('Holiday Pass · Quick setup', desc, 'brand')
+            if self.staff_ids:
+                em.add_field(name='Staff', value=' '.join(f'<@&{rid}>' for rid in self.staff_ids)[:1024], inline=False)
+            if self.reviewer_ids:
+                em.add_field(name='Management', value=' '.join(f'<@&{rid}>' for rid in self.reviewer_ids)[:1024], inline=False)
+            em.add_field(name='Proof forum', value=f'<#{self.forum_id}>' if self.forum_id else 'Choose a forum below', inline=False)
+            if self.step == 2:
+                em.add_field(name='Staff panel', value='Will be posted in this channel. No new announcement ping.', inline=False)
+            return em
+
+        def render(self):
+            self.clear_items()
+            if self.step < 2:
+                picker = discord.ui.RoleSelect(placeholder='Choose staff roles' if self.step == 0 else 'Choose management roles', min_values=1, max_values=25)
+                async def choose(i):
+                    if any(r.is_default() for r in picker.values):
+                        return await reply(i, 'Choose a staff or management role, not @everyone.', True)
+                    if self.step == 0:
+                        self.staff_ids = [r.id for r in picker.values]
+                    else:
+                        self.reviewer_ids = [r.id for r in picker.values]
+                    self.step += 1
+                    self.render()
+                    await i.response.edit_message(embed=self.summary(), view=self)
+                picker.callback = choose
+                self.add_item(picker)
+            else:
+                finish = discord.ui.Button(label='Start Holiday Pass', style=discord.ButtonStyle.success)
+                finish.callback = self.finish
+                self.add_item(finish)
+                forum_picker = discord.ui.ChannelSelect(placeholder='Change proof forum (optional)', channel_types=[discord.ChannelType.forum])
+                async def forum_choose(i):
+                    self.forum_id = forum_picker.values[0].id
+                    await i.response.edit_message(embed=self.summary(), view=self)
+                forum_picker.callback = forum_choose
+                self.add_item(forum_picker)
+            if self.step > 0:
+                back = discord.ui.Button(label='Back')
+                async def previous(i):
+                    self.step -= 1
+                    self.render()
+                    await i.response.edit_message(embed=self.summary(), view=self)
+                back.callback = previous
+                self.add_item(back)
+            advanced = discord.ui.Button(label='Advanced settings')
+            async def advanced_open(i):
+                self.stop()
+                await i.response.edit_message(embed=ui.info('Optional tools for changing challenges and forum settings. Existing progress is kept.', 'Holiday Pass · Advanced settings'), view=SetupPanel(self.uid))
+            advanced.callback = advanced_open
+            self.add_item(advanced)
+
+        async def finish(self, i):
+            if self.busy:
+                return await reply(i, 'Setup is already being saved.')
+            forum = i.guild.get_channel(self.forum_id or 0)
+            if not isinstance(forum, discord.ForumChannel):
+                return await reply(i, 'Choose a proof forum using the optional forum picker.', True)
+            if not self.staff_ids or not self.reviewer_ids or any(i.guild.get_role(rid) is None for rid in self.staff_ids + self.reviewer_ids):
+                return await reply(i, 'A selected role is missing. Go Back and select it again.', True)
+            perms = forum.permissions_for(i.guild.me)
+            panel_perms = i.channel.permissions_for(i.guild.me)
+            if not (perms.view_channel and perms.send_messages and perms.send_messages_in_threads and perms.embed_links and perms.read_message_history and panel_perms.send_messages and panel_perms.embed_links):
+                return await reply(i, 'Give the bot View Channel, Send Messages, Send Messages in Threads, Embed Links, and Read Message History in the proof forum, plus Send Messages and Embed Links here.', True)
+            try:
+                usable_tags(forum)
+            except LedgerError as e:
+                return await reply(i, str(e), True)
+            self.busy = True
+            await i.response.defer()
+            old = ledger.guild(i.guild_id)
+            try:
+                config(i.guild_id, staff_roles=self.staff_ids, review_roles=self.reviewer_ids, forum=self.forum_id)
+                message = await i.channel.send(embed=ui.embed('Staff Holiday Pass', 'Complete challenges. Upload proof. Earn rewards.\n\n**100 Snowflakes = 1 level.** Spending in the shop never lowers your level.\n\nUse the buttons below to get started. Participation is optional.', 'brand'), view=HolidayPanel())
+            except (discord.HTTPException, OSError):
+                config(i.guild_id, staff_roles=old['staff_roles'], review_roles=old['review_roles'], forum=old['forum'])
+                self.busy = False
+                return await i.edit_original_response(embed=ui.err('Could not post the panel. Check channel permissions and try again.'), view=self)
+            self.stop()
+            await i.edit_original_response(embed=ui.ok(f'All set! [Open the staff panel]({message.jump_url}).\nStaff choose a challenge and upload proof; management approves it in the forum.', 'Holiday Pass is ready'), view=None)
+
     @bm.bot.command(name='holidaysetup')
     @commands.guild_only()
     async def holidaysetup(ctx):
         if not owner(ctx.author.id):
             return await ctx.send(embed=ui.err('Bot owners only.'))
-        g = ledger.guild(ctx.guild.id)
-        em = ui.embed('Holiday Pass · Setup', 'Choose eligible staff, management reviewers, and a proof forum. Add challenges, then post the staff panel in this channel.\n\nSettings save as you select them. Forum posts are visible to everyone with access to that forum; use a staff-only forum.\n\nSeason: November 2 – December 31, 2026 · America/Phoenix. Daily resets at midnight; weekly resets every seven days from November 2.', 'brand')
-        em.add_field(name='Current configuration', value=f'Staff roles: {len(g["staff_roles"])} · Reviewer roles: {len(g["review_roles"])}\nForum: ' + (f'<#{g["forum"]}>' if g['forum'] else 'Not selected'))
-        await ctx.send(embed=em, view=SetupPanel(ctx.author.id), allowed_mentions=discord.AllowedMentions.none())
+        view = QuickSetup(ctx.author.id, ctx.guild)
+        await ctx.send(embed=view.summary(), view=view, allowed_mentions=discord.AllowedMentions.none())
 
     bm.bot.add_view(HolidayPanel())
     bm.bot.add_view(ReviewPanel())
