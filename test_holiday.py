@@ -1,0 +1,105 @@
+import tempfile
+import unittest
+from pathlib import Path
+from datetime import datetime, timezone
+from holiday_store import HolidayStore, LedgerError
+
+NOV = datetime(2026, 11, 3, 18, tzinfo=timezone.utc)
+DEC = datetime(2026, 12, 3, 18, tzinfo=timezone.utc)
+
+
+class LedgerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / 'pass.json'
+        self.store = HolidayStore(self.path)
+        self.store.change(1, lambda g: g['challenges'].update(snow={'name': 'Snow Patrol', 'points': 400, 'cadence': 'daily', 'enabled': True}))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def earn(self, uid=2, proof='proof', at=NOV):
+        key = self.store.create_claim(1, uid, 'snow', at)
+        self.store.submit(1, key, [proof], at)
+        self.store.review_claim(1, key, 3, True)
+        return key
+
+    def test_once_per_reset_no_double_approval_and_persistence(self):
+        key = self.earn()
+        with self.assertRaises(LedgerError):
+            self.store.create_claim(1, 2, 'snow', NOV)
+        with self.assertRaises(LedgerError):
+            self.store.review_claim(1, key, 3, True)
+        loaded = HolidayStore(self.path)
+        self.assertEqual(loaded.guild(1)['accounts']['2'], {'earned': 400, 'balance': 400})
+
+    def test_shop_does_not_lower_levels(self):
+        self.earn()
+        key = self.store.request_order(1, 2, 'gold500', NOV)
+        self.store.review_order(1, key, 3, 'approved', NOV)
+        self.store.review_order(1, key, 3, 'delivered', NOV)
+        account = self.store.guild(1)['accounts']['2']
+        self.assertEqual(account, {'earned': 400, 'balance': 250})
+        with self.assertRaises(LedgerError):
+            self.store.review_order(1, key, 3, 'approved', NOV)
+
+    def test_reused_proof_and_self_review_blocked(self):
+        self.earn()
+        key = self.store.create_claim(1, 4, 'snow', NOV)
+        with self.assertRaises(LedgerError):
+            self.store.submit(1, key, ['proof'], NOV)
+        self.store.submit(1, key, ['different'], NOV)
+        with self.assertRaises(LedgerError):
+            self.store.review_claim(1, key, 4, True)
+        self.assertNotIn('4', self.store.guild(1)['accounts'])
+
+    def test_carryover_rotation_and_event_end(self):
+        self.earn()
+        with self.assertRaises(LedgerError):
+            self.store.request_order(1, 2, 'christmas', NOV)
+        self.earn(proof='december', at=DEC)
+        self.assertEqual(self.store.guild(1)['accounts']['2']['earned'], 800)
+        self.store.request_order(1, 2, 'christmas', DEC)
+        with self.assertRaises(LedgerError):
+            self.store.create_claim(1, 5, 'snow', datetime(2027, 1, 1, 7, tzinfo=timezone.utc))
+
+    def test_failed_transaction_leaves_balance_unchanged(self):
+        self.earn()
+        key = self.store.request_order(1, 2, 'gold500', NOV)
+        with self.assertRaises(LedgerError):
+            self.store.review_order(1, key, 2, 'approved', NOV)
+        self.assertEqual(self.store.guild(1)['accounts']['2']['balance'], 400)
+
+    def test_weekly_reset_and_secret_expiry(self):
+        self.store.change(1, lambda g: g['challenges'].update(week={'name': 'Weekly', 'points': 100, 'cadence': 'weekly'}, secret={'name': 'Secret', 'points': 500, 'cadence': 'secret', 'expires': NOV.timestamp()-1}))
+        self.store.create_claim(1, 2, 'week', NOV)
+        with self.assertRaises(LedgerError):
+            self.store.create_claim(1, 2, 'week', datetime(2026, 11, 8, 18, tzinfo=timezone.utc))
+        self.store.create_claim(1, 2, 'week', datetime(2026, 11, 9, 18, tzinfo=timezone.utc))
+        with self.assertRaises(LedgerError):
+            self.store.create_claim(1, 2, 'secret', NOV)
+
+
+class UIRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_persistent_views_register_once(self):
+        import discord
+        import holiday
+        from discord.ext import commands
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = commands.Bot(command_prefix='.', intents=discord.Intents.none())
+            from unittest.mock import AsyncMock
+            bot.wait_until_ready = AsyncMock()
+            module = SimpleNamespace(bot=bot, OWNER_IDS={1}, DATA_DIR=Path(tmp))
+            holiday.setup(module)
+            holiday.setup(module)
+            await bot._holiday_announcement_task
+            self.assertIsNotNone(bot.get_command('holidaysetup'))
+            self.assertEqual(len(bot.persistent_views), 2)
+            self.assertTrue(all(v.is_persistent() for v in bot.persistent_views))
+            await bot.close()
+
+
+if __name__ == '__main__':
+    unittest.main()
+

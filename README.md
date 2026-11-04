@@ -44,6 +44,45 @@ segment-bar style across progress displays. Discord controls the card geometry,
 font, and button appearance.
 
 ## Setup (separate from the other bot!)
+
+### Holiday Pass (2026 season)
+
+Run `.holidaysetup` as a configured bot owner. Use the role pickers for eligible
+staff and management reviewers, select a **Forum Channel**, add challenges, and
+post the staff panel in the current channel. Use a staff-only forum with required
+tags disabled; the bot needs View Channel, Send Messages, Send Messages in Threads,
+Embed Links, Read Message History, and permission to create forum posts. Participants
+need to see and reply to their posts and attach files. Forum submissions are not
+private from other members who can view that forum.
+
+Staff use **My Holiday Pass**, **Challenges & proof**, and **Holiday shop**.
+Challenge selection creates a forum submission; the member uploads image/video
+attachments there, then selects **Submit proof for review**. The bot checks up to
+100 recent messages, accepts up to five files of at most 25 MB each, and compares
+file hashes against prior submissions. This detects identical reuploads, not
+altered/cropped or misleading evidence: management still verifies authenticity.
+Links alone are not evidence uploads in this version. A rejected claim consumes
+that challenge/reset slot; management should review carefully.
+
+Reviewers use persistent **Approve** / **Reject** buttons in the forum post.
+They cannot approve their own proof or purchases. Approvals cannot award twice.
+The shop uses the supplied 15 items and prices, with Autumn/Christmas boxes
+restricted to November/December. Purchase approval rechecks funds and deducts the
+spendable balance; **Mark delivered** tracks manual management fulfilment. Gold,
+cosmetics, role grants, temporary role colors, raffle entries, and level rewards
+are delivered by management, not automatically granted in-game. The panel marks
+Level 20 reward eligibility at 2,000 lifetime Snowflakes.
+
+Lifetime earned Snowflakes determine level (100 per level); purchases never lower
+that total. The event runs November 2 through December 31, 2026, America/Phoenix.
+Daily reset periods start at local midnight, weekly periods every seven days from
+November 2. Secret missions have owner-configured deadlines and rewards up to 500.
+Submitted proofs can be reviewed after event close; new claims and purchase
+approvals are closed then. November balances carry into December unchanged.
+
+All balances, review states, challenges, proof hashes, and thread IDs persist in
+`holiday_pass.json` under the existing `DATA_DIR` volume using atomic replacement.
+Keep this data private and back it up. Panels/review controls survive restarts.
 1. Developer Portal → **new application** (don't reuse the old token) →
    Bot → copy token, enable **Server Members + Message Content** intents.
 2. Invite with the same permission set (Kick/Ban/Timeout, Manage
