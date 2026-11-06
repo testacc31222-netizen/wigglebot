@@ -3,7 +3,9 @@ import re
 
 
 def timed_play_quest(item):
-    # Match the requested custom quest without changing moderation or 20-minute tasks.
+    # Recognize the saved community play quest and its existing claim snapshots.
+    if item.get('challenge') == 'community-play' or item.get('name', item.get('title', '')).strip().casefold() == 'winter warm-up':
+        return True
     name = re.sub(r"[^a-z0-9]+", " ", item.get("name", item.get("title", "")).lower()).strip()
     return bool(re.fullmatch(r"(?:play (?:for )?30 (?:minutes|mins)(?: quest)?|play wigglesworth for 30 (?:minutes|mins)(?: quest)?)", name))
 
