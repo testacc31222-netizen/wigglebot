@@ -114,3 +114,17 @@ python bot.py
 ```
 Keep this and the old bot in **separate** PowerShell windows (one process each).
 
+
+## Timed quest and Wigglesworth decree
+
+The **Play for 30 minutes** quest uses a persistent 30-minute timer. Its forum
+post shows **Finish 30-minute session** instead of proof submission. No uploads
+are required; finishing queues it for management approval. The timer measures
+elapsed time, not verified game activity. Other quests retain their proof rules.
+Existing active timed posts and Holiday Pass panels in `#holiday-pass` refresh
+in place after deployment, with mentions disabled.
+
+`.wigglesworth` gives the caller a random honorary title (no role or reward
+changes). It requires an explicitly whitelisted user or role, including for
+admins; `.whitelist add @user` / `.whitelist add @role` manage access. The command
+is server-only, has a 30-second per-member cooldown, and disables every mention.

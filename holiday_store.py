@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from holiday_defaults import CHALLENGES, visible_challenge
+from quest_rules import timed_play_quest
 
 PHOENIX = timezone(timedelta(hours=-7))
 SHOP = [
@@ -106,18 +107,23 @@ class HolidayStore:
 
     def submit(self, gid, key, hashes, now):
         def op(g):
+            proof_hashes = list(hashes)
             c = g['claims'][key]
             if not self.active(g, now) or c['status'] != 'draft':
                 raise LedgerError('This submission cannot be sent for review now.')
             if c.get('expires') and now.timestamp() >= c['expires']:
                 raise LedgerError('The secret mission submission deadline has passed.')
-            if not hashes:
+            if timed_play_quest(c):
+                if now.timestamp() < c['created'] + 30 * 60:
+                    raise LedgerError('Your 30-minute session is still running. Finish playing before completing it.')
+                proof_hashes = []
+            elif not proof_hashes:
                 raise LedgerError('Attach screenshot/video evidence to your forum post first.')
-            if any(h in g['proofs'] for h in hashes):
+            if any(h in g['proofs'] for h in proof_hashes):
                 raise LedgerError('This proof has already been submitted. Use different evidence.')
-            for h in hashes:
+            for h in proof_hashes:
                 g['proofs'][h] = key
-            c.update(status='pending', hashes=hashes, submitted=now.timestamp())
+            c.update(status='pending', hashes=proof_hashes, submitted=now.timestamp())
         self.change(gid, op)
 
     def review_claim(self, gid, key, reviewer, approved, reason='', now=None):
@@ -169,4 +175,5 @@ class HolidayStore:
             o.update(status=action, reviewer=reviewer)
             return o
         return self.change(gid, op)
+
 

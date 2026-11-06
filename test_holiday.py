@@ -164,12 +164,13 @@ class UIRegistrationTests(unittest.IsolatedAsyncioTestCase):
             holiday.setup(module)
             await bot._holiday_announcement_task
             self.assertIsNotNone(bot.get_command('holidaysetup'))
-            self.assertEqual(len(bot.persistent_views), 3)
+            self.assertEqual(len(bot.persistent_views), 4)
             self.assertTrue(all(v.is_persistent() for v in bot.persistent_views))
             await bot.close()
 
 
 if __name__ == '__main__':
     unittest.main()
+
 
 

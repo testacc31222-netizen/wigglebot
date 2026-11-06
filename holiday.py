@@ -10,6 +10,7 @@ import ui
 from holiday_store import HolidayStore, LedgerError, SHOP, PHOENIX
 from holiday_defaults import MILESTONES, ANNOUNCEMENT, ANNOUNCEMENT_CHANNEL, ANNOUNCEMENT_GUILD, ANNOUNCEMENT_ROLE
 from holiday_defaults import COMMUNITY_CHALLENGES, eligible, visible_challenge
+from quest_rules import timed_play_quest
 
 
 def setup(bm):
@@ -37,6 +38,16 @@ def setup(bm):
     def config(gid, **kw):
         ledger.change(gid, lambda g: g.update(kw))
 
+    def session_description(claim):
+        ready = int(claim['created'] + 30 * 60)
+        return (f'**Participant:** <@{claim["user"]}>\n'
+                f'**Challenge:** {claim["title"]}\n'
+                f'**Reward:** {claim["points"]} Snowflakes\n\n'
+                f'Play for 30 minutes, then select **Finish 30-minute session**.\n'
+                f'You can finish <t:{ready}:R> (<t:{ready}:t>).\n'
+                'No screenshots or video required. This timer does not track gameplay; '
+                'management still approves your reward.')
+
     def lookup(i):
         g = ledger.guild(i.guild_id)
         for kind in ('claims', 'orders'):
@@ -50,7 +61,8 @@ def setup(bm):
         if not isinstance(forum, discord.ForumChannel):
             raise LedgerError('An owner must select a proof forum in holidaysetup first.')
         tags = usable_tags(forum)
-        result = await forum.create_thread(name=title[:100], embed=ui.embed(title, description, 'brand'), view=ReviewPanel(), applied_tags=tags, allowed_mentions=discord.AllowedMentions.none())
+        item = ledger.guild(i.guild_id)[kind][key]
+        result = await forum.create_thread(name=title[:100], embed=ui.embed(title, description, 'brand'), view=ReviewPanel(timed=kind == 'claims' and timed_play_quest(item)), applied_tags=tags, allowed_mentions=discord.AllowedMentions.none())
         ledger.change(i.guild_id, lambda g: g[kind][key].update(thread=result.thread.id))
         return result.thread
 
@@ -74,8 +86,24 @@ def setup(bm):
             return True
 
     class ReviewPanel(discord.ui.View):
-        def __init__(self):
+        def __init__(self, timed=False):
             super().__init__(timeout=None)
+            if timed:
+                self.remove_item(self.submit)
+            else:
+                self.remove_item(self.finish_session)
+
+        @discord.ui.button(label='Finish 30-minute session', style=discord.ButtonStyle.primary, custom_id='holiday:finish-session:v1')
+        async def finish_session(self, i, button):
+            await i.response.defer(ephemeral=True)
+            try:
+                kind, key, item = lookup(i)
+                if kind != 'claims' or not timed_play_quest(item) or item['user'] != i.user.id or not staff(i.user):
+                    raise LedgerError('Only the eligible participant can finish their own timed quest.')
+                ledger.submit(i.guild_id, key, [], now())
+                await reply(i, 'Session completed and sent to management for approval. No screenshots or video required.')
+            except (LedgerError, discord.HTTPException, OSError) as e:
+                await reply(i, str(e), True)
 
         @discord.ui.button(label='Submit proof for review', style=discord.ButtonStyle.primary, custom_id='holiday:submit:v1')
         async def submit(self, i, button):
@@ -86,6 +114,9 @@ def setup(bm):
                     raise LedgerError('Only the participant who opened this challenge post can submit it.')
                 if item['status'] != 'draft':
                     raise LedgerError('This submission has already been sent for review.')
+                if timed_play_quest(item):
+                    ledger.submit(i.guild_id, key, [], now())
+                    return await reply(i, 'Session completed and sent to management. No proof upload is required.')
                 hashes = []
                 # Hash actual files: changing a filename or reuploading identical
                 # bytes does not allow the same evidence to earn XP again.
@@ -159,8 +190,12 @@ def setup(bm):
             try:
                 key = ledger.create_claim(i.guild_id, i.user.id, self.picker.values[0], now())
                 claim = ledger.guild(i.guild_id)['claims'][key]
-                thread = await open_post(i, f'Proof · {i.user.display_name} · {claim["title"]}', f'**Participant:** <@{i.user.id}>\n**Challenge:** {claim["title"]}\n**Reward:** {claim["points"]} Snowflakes\n**Task:** {claim.get("instructions", "Follow the challenge announcement.")}\n\nUpload screenshot/video evidence as a reply in this post, then click **Submit proof for review**. Only management can approve it.', 'claims', key)
-                await reply(i, f'Your proof post is ready: {thread.mention}\nUpload your evidence there, then submit it for review.')
+                if timed_play_quest(claim):
+                    thread = await open_post(i, f'Session · {i.user.display_name} · {claim["title"]}', session_description(claim), 'claims', key)
+                    await reply(i, f'Your 30-minute session has started: {thread.mention}\nPlay for 30 minutes, then click **Finish 30-minute session**. No uploads required. Management approves the reward.')
+                else:
+                    thread = await open_post(i, f'Proof · {i.user.display_name} · {claim["title"]}', f'**Participant:** <@{i.user.id}>\n**Challenge:** {claim["title"]}\n**Reward:** {claim["points"]} Snowflakes\n**Task:** {claim.get("instructions", "Follow the challenge announcement.")}\n\nUpload screenshot/video evidence as a reply in this post, then click **Submit proof for review**. Only management can approve it.', 'claims', key)
+                    await reply(i, f'Your proof post is ready: {thread.mention}\nUpload your evidence there, then submit it for review.')
             except (LedgerError, discord.HTTPException, OSError) as e:
                 if key and not ledger.guild(i.guild_id)['claims'][key].get('thread'):
                     ledger.change(i.guild_id, lambda g: g['claims'].pop(key, None))
@@ -215,14 +250,14 @@ def setup(bm):
                 em.add_field(name='My purchases', value='\n'.join(f'`{key}` · {o["item"]} · **{o["status"]}**' for key, o in orders[-5:])[:1024], inline=False)
             await i.response.send_message(embed=em, ephemeral=True)
 
-        @discord.ui.button(label='Challenges & proof', custom_id='holiday:challenges:v1')
+        @discord.ui.button(label='Start a challenge', custom_id='holiday:challenges:v1')
         async def challenges(self, i, button):
             if not ledger.active(ledger.guild(i.guild_id), now()):
                 return await reply(i, 'The event is closed.', True)
             view = ChallengePicker(i.user.id, i.guild_id)
             if not view.picker.options:
                 return await reply(i, 'Management has not added any active challenges yet.')
-            await i.response.send_message(embed=ui.info('Choose a challenge to open your forum submission. Daily/weekly resets follow the event start in America/Phoenix. Each challenge can be claimed once per reset. Upload original evidence; management verifies it before awarding Snowflakes.', 'Holiday challenges'), view=view, ephemeral=True)
+            await i.response.send_message(embed=ui.info('Choose a challenge to open your forum post. The Play for 30 minutes quest uses a timer and needs no uploads. Other challenges require original evidence. Management approves rewards. Each challenge can be claimed once per reset.', 'Holiday challenges'), view=view, ephemeral=True)
 
         @discord.ui.button(label='Holiday shop', custom_id='holiday:shop:v1')
         async def shop(self, i, button):
@@ -472,6 +507,9 @@ def setup(bm):
 
     bm.bot.add_view(HolidayPanel())
     bm.bot.add_view(ReviewPanel())
+    bm.bot.add_view(ReviewPanel(timed=True))
+    import wigglesworth
+    wigglesworth.setup(bm)
     import holiday_management
     def shop_surface():
         view = HolidayPanel()
@@ -505,6 +543,71 @@ def setup(bm):
             print(f'[holiday] announcement not confirmed: {type(exc).__name__}; inspect channel before manual retry')
 
     bm.bot._holiday_announcement_task = asyncio.create_task(send_requested_announcement())
+
+    async def refresh_quest_panels():
+        # Wait for legacy panel setup so we edit its existing message, never repost it.
+        await bm.bot.wait_until_ready()
+        await bm.bot._holiday_proof_surface_task
+        for gid in list(ledger.data):
+            guild = bm.bot.get_guild(int(gid))
+            if guild is None:
+                continue
+            g = ledger.guild(gid)
+            panel_count = session_count = 0
+            from holiday_management import matching_channel
+            channel = matching_channel(guild.text_channels, 'holiday-pass')
+            if channel is not None:
+                try:
+                    messages = {}
+                    panel_id = g.get('requested_community_proof_panel')
+                    if panel_id:
+                        try:
+                            messages[panel_id] = await channel.fetch_message(panel_id)
+                        except discord.NotFound:
+                            pass
+                    async for message in channel.history(limit=100):
+                        if message.author.id == bm.bot.user.id and any(
+                            getattr(child, 'custom_id', '') == 'holiday:progress:v1'
+                            for row in message.components for child in row.children
+                        ):
+                            messages[message.id] = message
+                    for message in messages.values():
+                        if message.author.id != bm.bot.user.id:
+                            continue
+                        title = 'Community Holiday Pass' if g.get('participation') == 'community' else 'Holiday Pass'
+                        description = (
+                            'Choose **Start a challenge** to begin.\n\n'
+                            '**Play for 30 minutes:** start your session, play, then use '
+                            '**Finish 30-minute session** in your post. No uploads required. '
+                            'Management approves the reward.\n'
+                            '**Other challenges:** upload the requested evidence and submit it for review.\n\n'
+                            '**100 Snowflakes = 1 level.** Check **My Holiday Pass** for progress.\n\n'
+                            '**New: .wigglesworth** gives you a fun honorary title. '
+                            'Whitelisted members and roles only; no pings.')
+                        await message.edit(embed=ui.embed(title, description, 'brand'),
+                                           view=HolidayPanel(), allowed_mentions=discord.AllowedMentions.none())
+                        panel_count += 1
+                        print(f'[quest-update] panel refreshed guild={gid} channel={channel.id} message={message.id}', flush=True)
+                except discord.HTTPException as exc:
+                    print(f'[quest-update] panel refresh failed guild={gid}: {type(exc).__name__}', flush=True)
+            for key, claim in list(g.get('claims', {}).items()):
+                if not timed_play_quest(claim) or not claim.get('thread') or claim['status'] not in ('draft', 'pending'):
+                    continue
+                try:
+                    thread = guild.get_thread(claim['thread']) or await bm.bot.fetch_channel(claim['thread'])
+                    message = await thread.fetch_message(claim['thread'])
+                    view = ReviewPanel(timed=True)
+                    view.finish_session.disabled = claim['status'] != 'draft'
+                    await message.edit(embed=ui.embed(claim['title'], session_description(claim), 'brand'),
+                                       view=view, allowed_mentions=discord.AllowedMentions.none())
+                    session_count += 1
+                except discord.HTTPException as exc:
+                    print(f'[quest-update] session refresh failed thread={claim["thread"]}: {type(exc).__name__}', flush=True)
+            matches = [c['name'] for c in g.get('challenges', {}).values() if timed_play_quest(c)]
+            print(f'[quest-update] complete guild={gid} panels={panel_count} sessions={session_count} timed_quests={matches}', flush=True)
+
+    bm.bot._holiday_quest_refresh_task = asyncio.create_task(refresh_quest_panels())
+
 
 
 
