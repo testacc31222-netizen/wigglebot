@@ -51,6 +51,7 @@ DATA_FILE = DATA_DIR / "guild_config.json"
 XP_FILE = DATA_DIR / "xp.json"
 AFK_FILE = DATA_DIR / "afk.json"
 RR_FILE = DATA_DIR / "rolemenus.json"
+WARN_FILE = DATA_DIR / "warnings.json"
 
 # persistent per-user message counters (messages.json) — batched writes
 stats.configure(DATA_DIR)
@@ -70,6 +71,22 @@ def _save_rr(data: dict) -> None:
 
 
 rr_data: dict = _load_rr()  # guild -> [{channel, message, roles[]}]
+
+
+def _load_warns() -> dict:
+    if WARN_FILE.exists():
+        try:
+            return json.loads(WARN_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _save_warns() -> None:
+    WARN_FILE.write_text(json.dumps(warn_data, indent=2), encoding="utf-8")
+
+
+warn_data: dict = _load_warns()  # guild -> {"seq": int, "items": [...]}
 
 
 def _load_afk() -> dict:
@@ -250,6 +267,13 @@ DEFAULT_GUILD_CONFIG = {
     "msgraid_action": "lockdown",  # lockdown | timeout | none
     "msgraid_purge": True,       # wipe the offender's recent messages
     "msgraid_webhook_delete": True,  # auto-delete a flooding webhook
+    # --- warning system (staff tooling) ---
+    "warn_mute_at": 3,           # 3 active warns -> timeout (0 = off)
+    "warn_kick_at": 7,           # 7 active warns -> kick (0 = off)
+    "warn_ban_at": 0,            # 0 = never auto-ban
+    "warn_expiry_days": 30,      # warns expire after N days (0 = never)
+    "warn_allowed_role_ids": [],  # extra roles that may warn
+    "warn_allowed_user_ids": [],  # extra users that may warn
     "link_allowed_channels": [],  # links+invites allowed here (partners)
     "lobby_channel_id": None,   # join-to-create voice channel
     "chat_channel_id": None,    # bot chat only here when set
@@ -2551,6 +2575,346 @@ async def cmd_webhooks(ctx: commands.Context, action: str = "", target: str = ""
     await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
+# ---------- staff warning system ----------
+
+def _warn_bucket(guild_id: int) -> dict:
+    return warn_data.setdefault(str(guild_id), {"seq": 0, "items": []})
+
+
+def _warn_prune(guild_id: int, cfg: dict) -> None:
+    days = int(cfg.get("warn_expiry_days", 30) or 0)
+    if days <= 0:
+        return
+    cutoff = time.time() - days * 86400
+    bucket = _warn_bucket(guild_id)
+    before = len(bucket["items"])
+    bucket["items"] = [w for w in bucket["items"]
+                       if float(w.get("at", 0) or 0) >= cutoff]
+    if len(bucket["items"]) != before:
+        _save_warns()
+
+
+def _warn_active(guild_id: int, user_id: int) -> list[dict]:
+    return [w for w in _warn_bucket(guild_id)["items"]
+            if str(w.get("user_id")) == str(user_id)]
+
+
+def can_warn(ctx: commands.Context) -> bool:
+    """Owner, server admin/manage-server, or a role/user added with .warnperm."""
+    try:
+        if ctx.author.id in OWNER_IDS:
+            return True
+        if (ctx.author.guild_permissions.administrator
+                or ctx.author.guild_permissions.manage_guild):
+            return True
+    except Exception:
+        pass
+    try:
+        cfg = get_config(ctx.guild.id)
+        if ctx.author.id in (cfg.get("warn_allowed_user_ids") or []):
+            return True
+        allowed = set(cfg.get("warn_allowed_role_ids") or [])
+        return any(r.id in allowed for r in getattr(ctx.author, "roles", []))
+    except Exception:
+        return False
+
+
+def warn_staff():
+    async def predicate(ctx: commands.Context) -> bool:
+        return can_warn(ctx)
+    return commands.check(predicate)
+
+
+def _next_warn_id(bucket: dict) -> str:
+    bucket["seq"] = int(bucket.get("seq", 0) or 0) + 1
+    return f"W-{bucket['seq']:04d}"
+
+
+def _find_warn(bucket: dict, raw: str) -> dict | None:
+    wid = (raw or "").strip().upper()
+    items = bucket.get("items", [])
+    if not wid:
+        return None
+    hit = next((w for w in items if str(w.get("id", "")).upper() == wid), None)
+    if hit is not None:
+        return hit
+    digits = wid[2:] if wid.startswith("W-") else wid
+    if digits.isdigit():
+        want = f"W-{int(digits):04d}"
+        return next((w for w in items
+                     if str(w.get("id", "")).upper() == want), None)
+    return None
+
+
+async def _warn_escalate(ctx: commands.Context, member: discord.Member,
+                         count: int, cfg: dict) -> str:
+    """Apply the automatic punishment exactly when a threshold is reached."""
+    mute_at = int(cfg.get("warn_mute_at", 3) or 0)
+    kick_at = int(cfg.get("warn_kick_at", 7) or 0)
+    ban_at = int(cfg.get("warn_ban_at", 0) or 0)
+    reason = f"Warning escalation: {count} active warnings"
+    try:
+        if ban_at and count == ban_at:
+            await member.ban(reason=reason)
+            return f"banned (reached **{ban_at}** warnings)"
+        if kick_at and count == kick_at:
+            await member.kick(reason=reason)
+            return f"kicked (reached **{kick_at}** warnings)"
+        if mute_at and count == mute_at:
+            mins = int(cfg.get("timeout_duration_minutes", 10) or 10)
+            await member.timeout(timedelta(minutes=mins), reason=reason)
+            return f"timed out **{mins} min** (reached **{mute_at}** warnings)"
+    except (discord.Forbidden, discord.HTTPException):
+        return "auto-action failed (missing permission or role too high)"
+    return ""
+
+
+@bot.command(name="warn")
+@warn_staff()
+async def cmd_warn(ctx: commands.Context, member: discord.Member | None = None,
+                   *, reason: str = "") -> None:
+    """Warn a member. Usage: .warn @user [reason]"""
+    if member is None:
+        await ctx.send(embed=ui.info(f"`{PREFIX}warn @user [reason]`", "Warnings"))
+        return
+    cfg = get_config(ctx.guild.id)
+    _warn_prune(ctx.guild.id, cfg)
+    if member.bot:
+        await ctx.send(embed=ui.err("Bots can't be warned.", "Warnings"))
+        return
+    if member.id == ctx.author.id:
+        await ctx.send(embed=ui.err("You can't warn yourself.", "Warnings"))
+        return
+    if ctx.author.id not in OWNER_IDS:
+        if member.id == ctx.guild.owner_id:
+            await ctx.send(embed=ui.err("You can't warn the server owner.", "Warnings"))
+            return
+        if member.guild_permissions.administrator:
+            await ctx.send(embed=ui.err("You can't warn an administrator.", "Warnings"))
+            return
+        if is_whitelisted(member, cfg):
+            await ctx.send(embed=ui.err("That member is whitelisted/protected.", "Warnings"))
+            return
+    reason = (reason or "").strip()[:500] or "no reason given"
+    bucket = _warn_bucket(ctx.guild.id)
+    wid = _next_warn_id(bucket)
+    bucket["items"].append({
+        "id": wid, "user_id": str(member.id),
+        "user_name": getattr(member, "display_name", str(member))[:100],
+        "mod_id": str(ctx.author.id), "mod_name": str(ctx.author)[:100],
+        "reason": reason, "at": time.time(),
+    })
+    if len(bucket["items"]) > 2000:
+        bucket["items"] = bucket["items"][-2000:]
+    _save_warns()
+    count = len(_warn_active(ctx.guild.id, member.id))
+    escalation = await _warn_escalate(ctx, member, count, cfg)
+    try:
+        await member.send(embed=ui.warn(
+            f"You were warned in **{ctx.guild.name}** by "
+            f"**{ctx.author.display_name}**.\n"
+            f"**Reason:** {reason}\n**Active warnings:** {count}",
+            f"Warning {wid}"))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    desc = (f"{member.mention} was warned by {ctx.author.mention}\n"
+            f"**Reason:** {reason}\n"
+            f"**Active warnings:** {count} · `{wid}`")
+    if escalation:
+        desc += f"\n**Auto action:** {escalation}"
+    em = ui.warn(desc, "Member warned")
+    try:
+        await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions(users=True))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    await send_log(ctx.guild, "", event="warn", embed=em)
+    try:
+        community.open_case(ctx.guild.id, member.id, member.display_name,
+                            ctx.author.id, str(ctx.author), "warn", reason)
+    except Exception:
+        pass
+
+
+@bot.command(name="warnings", aliases=["warns"])
+async def cmd_warnings(ctx: commands.Context, member: discord.Member | None = None) -> None:
+    """Show active warnings. Usage: .warnings [@user]"""
+    target = member or ctx.author
+    if target.id != ctx.author.id and not can_warn(ctx):
+        await ctx.send(embed=ui.err("Staff only — you can view your own warnings.",
+                                    "Warnings"))
+        return
+    cfg = get_config(ctx.guild.id)
+    _warn_prune(ctx.guild.id, cfg)
+    items = sorted(_warn_active(ctx.guild.id, target.id),
+                   key=lambda w: float(w.get("at", 0) or 0))
+    if not items:
+        await ctx.send(embed=ui.info(f"**{target.display_name}** has no active warnings.",
+                                     "Warnings"))
+        return
+    lines = []
+    for w in items[-10:]:
+        when = datetime.fromtimestamp(float(w.get("at", 0) or 0),
+                                      tz=timezone.utc).strftime("%b %d")
+        lines.append(f"`{w.get('id', '?')}` · {when} · "
+                     f"{(w.get('reason') or '')[:120]} — {w.get('mod_name', '?')}")
+    nxt = []
+    for label, key in (("timeout", "warn_mute_at"), ("kick", "warn_kick_at"),
+                       ("ban", "warn_ban_at")):
+        at = int(cfg.get(key, 0) or 0)
+        if at and len(items) < at:
+            nxt.append(f"{at - len(items)} more → {label}")
+    em = ui.embed(f"⚠️  Warnings — {target.display_name}", "\n".join(lines), "warning",
+                  footer=f"{ui.FOOTER} • {len(items)} active")
+    if nxt:
+        em.add_field(name="Next", value=" · ".join(nxt), inline=False)
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.command(name="delwarn")
+@warn_staff()
+async def cmd_delwarn(ctx: commands.Context, warn_id: str = "") -> None:
+    """Remove one warning by ID. Usage: .delwarn W-0001"""
+    if not warn_id:
+        await ctx.send(embed=ui.info(f"`{PREFIX}delwarn W-0001`", "Warnings"))
+        return
+    cfg = get_config(ctx.guild.id)
+    _warn_prune(ctx.guild.id, cfg)
+    bucket = _warn_bucket(ctx.guild.id)
+    hit = _find_warn(bucket, warn_id)
+    if hit is None:
+        await ctx.send(embed=ui.err("No warning with that ID.", "Warnings"))
+        return
+    bucket["items"].remove(hit)
+    _save_warns()
+    await ctx.send(embed=ui.ok(
+        f"Removed `{hit.get('id')}` for **{hit.get('user_name', '?')}**.",
+        "Warning removed"))
+
+
+@bot.command(name="clearwarns")
+@warn_staff()
+async def cmd_clearwarns(ctx: commands.Context,
+                         member: discord.Member | None = None) -> None:
+    """Remove all warnings for a member. Usage: .clearwarns @user"""
+    if member is None:
+        await ctx.send(embed=ui.info(f"`{PREFIX}clearwarns @user`", "Warnings"))
+        return
+    cfg = get_config(ctx.guild.id)
+    _warn_prune(ctx.guild.id, cfg)
+    bucket = _warn_bucket(ctx.guild.id)
+    before = len(bucket["items"])
+    bucket["items"] = [w for w in bucket["items"]
+                       if str(w.get("user_id")) != str(member.id)]
+    removed = before - len(bucket["items"])
+    _save_warns()
+    await ctx.send(embed=ui.ok(
+        f"Cleared **{removed}** warning(s) for **{member.display_name}**.",
+        "Warnings cleared"))
+
+
+@bot.command(name="warnconfig")
+@owner_or_admin()
+async def cmd_warnconfig(ctx: commands.Context, key: str = "", value: str = "") -> None:
+    """Tune the warning system. Usage: .warnconfig mute|kick|ban|expiry <number>"""
+    keys = {"mute": "warn_mute_at", "kick": "warn_kick_at",
+            "ban": "warn_ban_at", "expiry": "warn_expiry_days"}
+    k = (key or "").lower().strip()
+    if k:
+        if k not in keys:
+            await ctx.send(embed=ui.err(
+                f"`{PREFIX}warnconfig mute|kick|ban|expiry <number>`", "Warnings"))
+            return
+        if not value.isdigit():
+            await ctx.send(embed=ui.err("Value must be a number (0 = off).", "Warnings"))
+            return
+        n = int(value)
+        if n > 365:
+            await ctx.send(embed=ui.err("Keep it 365 or less.", "Warnings"))
+            return
+        update_config(ctx.guild.id, **{keys[k]: n})
+    cfg = get_config(ctx.guild.id)
+    em = ui.embed("⚙️  Warning escalation", kind="brand",
+                  footer=f"{ui.FOOTER} • warnings")
+    em.add_field(name="Timeout at", value=f"{cfg.get('warn_mute_at', 3)} warns", inline=True)
+    em.add_field(name="Kick at", value=f"{cfg.get('warn_kick_at', 7)} warns", inline=True)
+    em.add_field(name="Ban at", value=(f"{cfg.get('warn_ban_at', 0)} warns"
+                                       if cfg.get("warn_ban_at") else "off"), inline=True)
+    em.add_field(name="Expiry",
+                 value=(f"{cfg.get('warn_expiry_days', 30)} days"
+                        if cfg.get("warn_expiry_days") else "never"), inline=True)
+    em.add_field(name="Timeout length",
+                 value=f"{cfg.get('timeout_duration_minutes', 10)} min", inline=True)
+    em.add_field(name="Change",
+                 value=f"`{PREFIX}warnconfig mute 3` · `{PREFIX}warnconfig kick 7` · "
+                       f"`{PREFIX}warnconfig ban 0` · `{PREFIX}warnconfig expiry 30`",
+                 inline=False)
+    await ctx.send(embed=em)
+
+
+@bot.command(name="warnperm")
+@owner_or_admin()
+async def cmd_warnperm(ctx: commands.Context, action: str = "",
+                       *, target: str = "") -> None:
+    """Control who may warn, besides owner/admin. Usage: .warnperm add|remove @role|@user"""
+    act = (action or "").lower().strip()
+    role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+    user = ctx.message.mentions[0] if ctx.message.mentions else None
+    if act in ("add", "remove"):
+        if role is not None:
+            ids = [int(x) for x in (get_config(ctx.guild.id).get(
+                "warn_allowed_role_ids") or [])]
+            if act == "add" and role.id not in ids:
+                ids.append(role.id)
+            elif act == "remove" and role.id in ids:
+                ids.remove(role.id)
+            update_config(ctx.guild.id, warn_allowed_role_ids=ids)
+            label = f"role **{role.name}**"
+        elif user is not None:
+            ids = [int(x) for x in (get_config(ctx.guild.id).get(
+                "warn_allowed_user_ids") or [])]
+            if act == "add" and user.id not in ids:
+                ids.append(user.id)
+            elif act == "remove" and user.id in ids:
+                ids.remove(user.id)
+            update_config(ctx.guild.id, warn_allowed_user_ids=ids)
+            label = f"user **{user.display_name}**"
+        else:
+            await ctx.send(embed=ui.err(
+                f"`{PREFIX}warnperm add @role` or `{PREFIX}warnperm add @user`",
+                "Warn permissions"))
+            return
+        await ctx.send(embed=ui.ok(
+            f"{'Can now' if act == 'add' else 'Can no longer'} warn: {label}.",
+            "Warn permissions"))
+        return
+    if act not in ("", "list"):
+        await ctx.send(embed=ui.err(
+            f"`{PREFIX}warnperm add|remove @role|@user` · `{PREFIX}warnperm`",
+            "Warn permissions"))
+        return
+    cfg = get_config(ctx.guild.id)
+    roles = []
+    for rid in cfg.get("warn_allowed_role_ids") or []:
+        r = ctx.guild.get_role(int(rid))
+        roles.append(f"**{r.name}**" if r else f"deleted role `{rid}`")
+    users = []
+    for uid in cfg.get("warn_allowed_user_ids") or []:
+        m = ctx.guild.get_member(int(uid))
+        users.append(f"**{m.display_name}**" if m else f"left user `{uid}`")
+    em = ui.embed("🔑  Who can warn", kind="brand",
+                  footer=f"{ui.FOOTER} • warn permissions")
+    em.description = "Owner, **Administrator** and **Manage Server** always can."
+    em.add_field(name="Extra roles", value=", ".join(roles) or "none", inline=False)
+    em.add_field(name="Extra users", value=", ".join(users) or "none", inline=False)
+    em.add_field(name="Change",
+                 value=(f"`{PREFIX}warnperm add @role` · "
+                        f"`{PREFIX}warnperm remove @role`\n"
+                        f"`{PREFIX}warnperm add @user` · "
+                        f"`{PREFIX}warnperm remove @user`"),
+                 inline=False)
+    await ctx.send(embed=em)
+
+
 @bot.command(name="rank", aliases=["lvl", "card"])
 async def cmd_rank(ctx: commands.Context, member: discord.Member | None = None) -> None:
     """Your profile & progress card. Usage: .rank [@user]"""
@@ -4666,6 +5030,12 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_help2.error
 @cmd_msgraid.error
 @cmd_webhooks.error
+@cmd_warn.error
+@cmd_warnings.error
+@cmd_delwarn.error
+@cmd_clearwarns.error
+@cmd_warnconfig.error
+@cmd_warnperm.error
 @cmd_explode.error
 @cmd_purge.error
 @cmd_mute.error
@@ -4708,6 +5078,10 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                       "voice", "voiceauto", "setlobby", "help2"):
             await ctx.send(embed=ui.err(f"Staff/whitelisted role only — ask an admin for "
                                         f"`{PREFIX}whitelist add @yourrole`."))
+        elif ctx.command and ctx.command.name in ("warn", "delwarn", "clearwarns"):
+            await ctx.send(embed=ui.err(
+                f"Staff only — ask an admin to allow your role with "
+                f"`{PREFIX}warnperm add @yourrole`."))
         else:
             await ctx.send(embed=ui.err("You need **Administrator** or **Manage Server** "
                                         "permission."))
