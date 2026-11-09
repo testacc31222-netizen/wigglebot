@@ -2167,9 +2167,16 @@ async def msgraid_check(message: discord.Message) -> bool:
                 return False
         except Exception:
             pass
-    # normal command use should never trip the flood guard
-    if not message.webhook_id and (message.content or "").lstrip().startswith(PREFIX):
-        return False
+    # real bot commands never count (fake ".spam" messages still do)
+    if not message.webhook_id:
+        txt = (message.content or "").lstrip()
+        if txt.startswith(PREFIX):
+            try:
+                head = txt[len(PREFIX):].split()[0] if len(txt) > len(PREFIX) else ""
+                if bot.get_command(head) is not None:
+                    return False
+            except Exception:
+                pass
     now = time.time()
     window = max(1, int(cfg.get("msgraid_seconds", 5) or 5))
     threshold = max(3, int(cfg.get("msgraid_count", 8) or 8))
