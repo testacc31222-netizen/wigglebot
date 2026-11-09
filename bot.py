@@ -243,6 +243,13 @@ DEFAULT_GUILD_CONFIG = {
     "automod_emoji": True,      # 8+ emojis = delete
     "automod_max_emoji": 8,
     "automod_words": [],        # banned words/phrases (lowercase match)
+    # --- message-raid guard (flood / spam / webhook attacks) ---
+    "msgraid_enabled": True,
+    "msgraid_count": 8,          # N messages ...
+    "msgraid_seconds": 5,        # ... within M seconds = message raid
+    "msgraid_action": "lockdown",  # lockdown | timeout | none
+    "msgraid_purge": True,       # wipe the offender's recent messages
+    "msgraid_webhook_delete": True,  # auto-delete a flooding webhook
     "link_allowed_channels": [],  # links+invites allowed here (partners)
     "lobby_channel_id": None,   # join-to-create voice channel
     "chat_channel_id": None,    # bot chat only here when set
@@ -354,6 +361,12 @@ previous_verification: dict[int, discord.VerificationLevel] = {}
 invite_cache: dict[int, dict[str, int]] = {}        # guild_id -> {invite_code: uses}
 join_invite: dict[int, dict[int, str]] = defaultdict(dict)  # guild_id -> {member_id: invite_code}
 invite_inviter: dict[str, int] = {}                 # invite_code -> inviter user id
+
+# message-raid guard state
+msg_track: dict[int, dict[str, deque]] = defaultdict(lambda: defaultdict(deque))
+msg_cooldown: dict[int, dict[str, float]] = defaultdict(dict)
+msg_raid_state: dict[int, dict] = {}                # guild -> last flood summary
+MSG_RAID_COOLDOWN_S = 90
 
 
 def is_whitelisted(member: discord.Member, cfg: dict) -> bool:
@@ -662,7 +675,6 @@ async def trigger_raid(guild: discord.Guild, cfg: dict, recent_members: list[dis
     await send_log(guild, "⚠️ Suspected raid — lockdown active.", embed=embed)
     track(guild.id, "mod", action="raid")
     await schedule_auto_unlock(guild, cfg)
-    await schedule_auto_unlock(guild, cfg)
 
 
 @bot.event
@@ -845,7 +857,27 @@ lobby_owned: dict[int, set[int]] = defaultdict(set)
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
-    if message.author.bot or not message.guild:
+    if message.guild is None:
+        await bot.process_commands(message)
+        return
+    me = bot.user
+    if me is not None and message.author.id == me.id:
+        return
+    # message-raid guard runs for users, other bots AND webhooks (they can flood too)
+    try:
+        if await msgraid_check(message):
+            return
+    except Exception as exc:
+        print(f"[msgraid] failed: {type(exc).__name__}: {exc}")
+    if message.webhook_id:
+        # webhooks must never bypass automod, run commands, chat or earn XP
+        cfg = get_config(message.guild.id)
+        try:
+            await automod_check(message)
+        except Exception as exc:
+            print(f"[automod] webhook check failed: {type(exc).__name__}: {exc}")
+        return
+    if message.author.bot:
         await bot.process_commands(message)
         return
     track(message.guild.id, "msg")
@@ -2003,6 +2035,7 @@ async def automod_check(message: discord.Message) -> bool:
     import re as _re
     cfg = get_config(message.guild.id)
     content = message.content or ""
+    is_webhook = bool(getattr(message, "webhook_id", None))
     invite_re, link_re = _regexes()
     reason = ""
     link_free = message.channel.id in (cfg.get("link_allowed_channels", []) or [])
@@ -2067,8 +2100,10 @@ async def automod_check(message: discord.Message) -> bool:
         t for t in strikes if now - t < AUTOMOD_STRIKE_WINDOW_S]
     n = len(automod_strikes[message.guild.id][message.author.id])
     try:
+        who = (f"webhook **{getattr(message.author, 'name', '?')}**" if is_webhook
+               else message.author.mention)
         warn = await message.channel.send(embed=ui.warn(
-            f"{message.author.mention} {reason} (strike **{n}/{AUTOMOD_STRIKES_TO_MUTE}**).",
+            f"{who} {reason} (strike **{n}/{AUTOMOD_STRIKES_TO_MUTE}**).",
             "Automod"))
         await asyncio.sleep(6)
         try:
@@ -2077,7 +2112,7 @@ async def automod_check(message: discord.Message) -> bool:
             pass
     except (discord.Forbidden, discord.HTTPException):
         pass
-    if n >= AUTOMOD_STRIKES_TO_MUTE:
+    if n >= AUTOMOD_STRIKES_TO_MUTE and isinstance(message.author, discord.Member) and not is_webhook:
         automod_strikes[message.guild.id][message.author.id] = []
         try:
             await message.author.timeout(timedelta(minutes=int(cfg.get("timeout_duration_minutes", 10))),
@@ -2096,6 +2131,173 @@ async def automod_check(message: discord.Message) -> bool:
         except (discord.Forbidden, discord.HTTPException):
             pass
     return True
+
+
+# ---------- message-raid guard (message flood / webhook attack) ----------
+
+def _msg_key(message: discord.Message) -> str:
+    if message.webhook_id:
+        return f"w:{message.webhook_id}"
+    return f"u:{message.author.id}"
+
+
+def _flood_label(message: discord.Message) -> str:
+    if message.webhook_id:
+        return f"webhook **{getattr(message.author, 'name', '?')}**"
+    return f"{message.author.mention} (`{message.author.id}`)"
+
+
+async def msgraid_check(message: discord.Message) -> bool:
+    """Watch every guild message (users, bots, webhooks) for a flood burst.
+
+    Unlike the join guard this is message-based: N messages in M seconds from
+    one user/bot/webhook = message raid. Returns True when it took action.
+    """
+    if message.guild is None:
+        return False
+    cfg = get_config(message.guild.id)
+    if not cfg.get("msgraid_enabled", True):
+        return False
+    me = bot.user
+    if me is not None and message.author.id == me.id:
+        return False
+    if not message.webhook_id and isinstance(message.author, discord.Member):
+        try:
+            if is_whitelisted(message.author, cfg):
+                return False
+        except Exception:
+            pass
+    # normal command use should never trip the flood guard
+    if not message.webhook_id and (message.content or "").lstrip().startswith(PREFIX):
+        return False
+    now = time.time()
+    window = max(1, int(cfg.get("msgraid_seconds", 5) or 5))
+    threshold = max(3, int(cfg.get("msgraid_count", 8) or 8))
+    key = _msg_key(message)
+    dq = msg_track[message.guild.id][key]
+    dq.append(now)
+    while dq and now - dq[0] > window:
+        dq.popleft()
+    count = len(dq)
+    if count < threshold:
+        return False
+    if now - msg_cooldown[message.guild.id].get(key, 0.0) < MSG_RAID_COOLDOWN_S:
+        return False
+    msg_cooldown[message.guild.id][key] = now
+    dq.clear()
+    await respond_to_msg_raid(message, cfg, count)
+    return True
+
+
+async def respond_to_msg_raid(message: discord.Message, cfg: dict, count: int) -> None:
+    guild = message.guild
+    is_webhook = bool(message.webhook_id)
+    action = (cfg.get("msgraid_action") or "lockdown").lower()
+    label = _flood_label(message)
+    lines: list[str] = []
+    purged = 0
+
+    # 1) wipe their recent messages (they can't keep the evidence up)
+    if cfg.get("msgraid_purge", True):
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+
+        def _mine(m: discord.Message) -> bool:
+            try:
+                if is_webhook:
+                    return m.webhook_id == message.webhook_id
+                return m.author.id == message.author.id
+            except Exception:
+                return False
+
+        try:
+            purged = len(await message.channel.purge(
+                limit=200, after=cutoff, check=_mine,
+                reason="Anti-raid: message flood"))
+        except (discord.Forbidden, discord.HTTPException):
+            purged = 0
+        lines.append(f"🧹 Purged **{purged}** recent message(s)")
+
+    # 2) webhooks: find the creator, then delete the hook itself
+    if is_webhook and cfg.get("msgraid_webhook_delete", True):
+        creator = None
+        try:
+            async for entry in guild.audit_logs(
+                    limit=10, action=discord.AuditLogAction.webhook_create):
+                tgt = getattr(entry, "target", None)
+                if tgt is not None and getattr(tgt, "id", None) == message.webhook_id:
+                    creator = entry.user
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            creator = None
+        deleted = False
+        try:
+            hooks = await guild.webhooks()
+            hook = next((h for h in hooks if h.id == message.webhook_id), None)
+            if hook is not None:
+                await hook.delete(reason="Anti-raid: webhook message flood")
+                deleted = True
+        except (discord.Forbidden, discord.HTTPException):
+            deleted = False
+        if deleted:
+            line = "🪝 Webhook **deleted**"
+            if creator is not None:
+                line += f" — created by {creator.mention} (`{creator.id}`)"
+            lines.append(line)
+        else:
+            lines.append("🪝 Webhook NOT deleted (needs Manage Webhooks)")
+    elif is_webhook:
+        lines.append("🪝 Webhook left in place (auto-delete off)")
+
+    # 3) human/bot offender: timeout
+    if not is_webhook and isinstance(message.author, discord.Member):
+        member = message.author
+        can_timeout = True
+        try:
+            if (member.id == guild.owner_id
+                    or member.guild_permissions.administrator
+                    or (guild.me is not None and member.top_role >= guild.me.top_role)):
+                can_timeout = False
+        except Exception:
+            can_timeout = False
+        if can_timeout and action in ("lockdown", "timeout"):
+            mins = int(cfg.get("timeout_duration_minutes", 10) or 10)
+            try:
+                await member.timeout(timedelta(minutes=mins),
+                                     reason="Anti-raid: message flood")
+                lines.append(f"🔇 Timed out **{mins} min**")
+            except (discord.Forbidden, discord.HTTPException):
+                lines.append("🔇 Timeout failed (missing permission)")
+        else:
+            lines.append("🔇 No timeout (owner/admin/too high, or action=none)")
+
+    # 4) optional server lockdown
+    locked = 0
+    if action == "lockdown":
+        if raid_active.get(guild.id):
+            lines.append("🔒 Server already locked")
+        else:
+            raid_active[guild.id] = True
+            locked = await lockdown_guild(guild, reason="message flood detected")
+            await schedule_auto_unlock(guild, cfg)
+            lines.append(f"🔒 Locked **{locked}** channel(s)")
+
+    msg_raid_state[guild.id] = {
+        "at": time.time(), "offender": label, "count": count,
+        "action": action, "purged": purged, "locked": locked,
+    }
+    dur = int(cfg.get("lockdown_duration_minutes", 10) or 0)
+    em = ui.embed(
+        "🚨 MESSAGE RAID DETECTED",
+        (f"**{count} messages in {cfg.get('msgraid_seconds', 5)}s** from {label}.\n"
+         + "\n".join(lines)),
+        "error", footer=f"{ui.FOOTER} • message guard")
+    em.add_field(
+        name="Recover",
+        value=(f"Auto-unlock in **{dur} min**." if action == "lockdown" and locked
+               else f"`{PREFIX}unlock` to reopen · `{PREFIX}msgraid` to review."),
+        inline=False)
+    await send_log(guild, "", event="raid", embed=em)
+    track(guild.id, "mod", action="raid")
 
 
 # ---------- commands ----------
@@ -2177,7 +2379,169 @@ async def cmd_status(ctx: commands.Context) -> None:
                  value=(f"{len(cfg.get('whitelisted_user_ids') or [])} user(s) · "
                         f"{len(cfg.get('whitelisted_role_ids') or [])} role(s)"),
                  inline=True)
+    # --- message-raid guard (floods / webhook spam) ---
+    em.add_field(name="Message guard",
+                 value=(f"**on** · {cfg['msgraid_count']} msgs / "
+                        f"{cfg['msgraid_seconds']}s"
+                        if cfg.get("msgraid_enabled", True)
+                        else "**off**"),
+                 inline=True)
+    em.add_field(name="Flood response",
+                 value=(f"`{cfg.get('msgraid_action', 'lockdown')}` · purge "
+                        f"{'on' if cfg.get('msgraid_purge', True) else 'off'}"),
+                 inline=True)
+    hooks = None
+    try:
+        hooks = await ctx.guild.webhooks()
+    except (discord.Forbidden, discord.HTTPException):
+        hooks = None
+    em.add_field(name="Webhooks",
+                 value=(f"{len(hooks)} · auto-delete "
+                        f"{'on' if cfg.get('msgraid_webhook_delete', True) else 'off'}"
+                        if hooks is not None else "unknown (no Manage Webhooks)"),
+                 inline=True)
+    last = msg_raid_state.get(ctx.guild.id)
+    if last:
+        ago = int(time.time() - last.get("at", time.time()))
+        em.add_field(
+            name="Last message raid",
+            value=(f"{last.get('offender', '?')} — **{last.get('count', 0)} msgs** "
+                   f"({ago}s ago) · purged {last.get('purged', 0)} · "
+                   f"locked {last.get('locked', 0)} ch"),
+            inline=False)
     await ctx.send(embed=em)
+
+
+@bot.command(name="msgraid")
+@owner_or_admin()
+async def cmd_msgraid(ctx: commands.Context, setting: str = "", value: str = "") -> None:
+    """Configure the message-raid guard (hidden helper).
+    Usage: .msgraid | .msgraid on|off | .msgraid count 8 | .msgraid seconds 5
+           .msgraid action lockdown|timeout|none | .msgraid purge on|off
+           .msgraid webhook on|off
+    """
+    s = (setting or "").lower().strip()
+    v = (value or "").lower().strip()
+    if s in ("on", "off"):
+        update_config(ctx.guild.id, msgraid_enabled=(s == "on"))
+    elif s in ("count", "seconds"):
+        if not v.isdigit():
+            await ctx.send(embed=ui.err(
+                f"`{PREFIX}msgraid {s} <number>`", "Message guard"))
+            return
+        n = int(v)
+        if s == "count":
+            if not 3 <= n <= 100:
+                await ctx.send(embed=ui.err("count must be 3–100 messages.", "Message guard"))
+                return
+            update_config(ctx.guild.id, msgraid_count=n)
+        else:
+            if not 1 <= n <= 60:
+                await ctx.send(embed=ui.err("seconds must be 1–60.", "Message guard"))
+                return
+            update_config(ctx.guild.id, msgraid_seconds=n)
+    elif s == "action":
+        if v not in ("lockdown", "timeout", "none"):
+            await ctx.send(embed=ui.err(
+                f"`{PREFIX}msgraid action lockdown|timeout|none`", "Message guard"))
+            return
+        update_config(ctx.guild.id, msgraid_action=v)
+    elif s in ("purge", "webhook"):
+        if v not in ("on", "off"):
+            await ctx.send(embed=ui.err(
+                f"`{PREFIX}msgraid {s} on|off`", "Message guard"))
+            return
+        key = "msgraid_purge" if s == "purge" else "msgraid_webhook_delete"
+        update_config(ctx.guild.id, **{key: v == "on"})
+    elif s:
+        await ctx.send(embed=ui.err(
+            f"`{PREFIX}msgraid [on|off|count|seconds|action|purge|webhook] [value]`",
+            "Message guard"))
+        return
+    cfg = get_config(ctx.guild.id)
+    em = ui.embed("🛡️  Message-raid guard", kind="brand",
+                  footer=f"{ui.FOOTER} • message guard")
+    em.description = ("Detects floods (users, bots and webhooks) — not join raids. "
+                      "Hidden from `.help`.")
+    em.add_field(name="Status", value=("**on**" if cfg.get("msgraid_enabled", True)
+                                       else "**off**"), inline=True)
+    em.add_field(name="Trigger", value=f"{cfg['msgraid_count']} msgs / "
+                                       f"{cfg['msgraid_seconds']}s", inline=True)
+    em.add_field(name="Action", value=f"`{cfg['msgraid_action']}`", inline=True)
+    em.add_field(name="Purge recent", value=("on" if cfg.get("msgraid_purge", True)
+                                             else "off"), inline=True)
+    em.add_field(name="Delete webhook",
+                 value=("on" if cfg.get("msgraid_webhook_delete", True) else "off"),
+                 inline=True)
+    em.add_field(name="Timeout length",
+                 value=f"{cfg.get('timeout_duration_minutes', 10)} min", inline=True)
+    em.add_field(name="Settings",
+                 value=(f"`{PREFIX}msgraid on|off` · `{PREFIX}msgraid count 8` · "
+                        f"`{PREFIX}msgraid seconds 5`\n"
+                        f"`{PREFIX}msgraid action lockdown|timeout|none` · "
+                        f"`{PREFIX}msgraid purge on|off` · `{PREFIX}msgraid webhook on|off`"),
+                 inline=False)
+    await ctx.send(embed=em)
+
+
+@bot.command(name="webhooks")
+@admin_only()
+async def cmd_webhooks(ctx: commands.Context, action: str = "", target: str = "") -> None:
+    """List or delete server webhooks (hidden helper).
+    Usage: .webhooks | .webhooks delete <id> | .webhooks delete all
+    """
+    act = (action or "").lower().strip()
+    try:
+        hooks = await ctx.guild.webhooks()
+    except (discord.Forbidden, discord.HTTPException):
+        await ctx.send(embed=ui.err("I need **Manage Webhooks** to list them.",
+                                    "Webhooks"))
+        return
+    if act == "delete":
+        if target.lower().strip() == "all":
+            removed = failed = 0
+            for h in hooks:
+                try:
+                    await h.delete(reason=f"webhook cleanup by {ctx.author}")
+                    removed += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    failed += 1
+            await ctx.send(embed=ui.ok(
+                f"Deleted **{removed}** webhook(s)"
+                + (f" · {failed} failed" if failed else "") + ".",
+                "Webhooks cleaned"))
+            return
+        if not target.isdigit():
+            await ctx.send(embed=ui.err(
+                f"`{PREFIX}webhooks delete <id>` or `{PREFIX}webhooks delete all`",
+                "Webhooks"))
+            return
+        hook = next((h for h in hooks if h.id == int(target)), None)
+        if hook is None:
+            await ctx.send(embed=ui.err("No webhook with that ID here.", "Webhooks"))
+            return
+        try:
+            await hook.delete(reason=f"webhook cleanup by {ctx.author}")
+            await ctx.send(embed=ui.ok(f"Deleted webhook **{hook.name}** "
+                                       f"(`{hook.id}`).", "Webhook deleted"))
+        except (discord.Forbidden, discord.HTTPException):
+            await ctx.send(embed=ui.err("Couldn't delete it (permissions).", "Webhooks"))
+        return
+    if not hooks:
+        await ctx.send(embed=ui.info("This server has **0** webhooks.", "Webhooks"))
+        return
+    lines = []
+    for h in hooks[:20]:
+        ch = getattr(h, "channel", None)
+        lines.append(f"`{h.id}` **{h.name}** — "
+                     f"{ch.mention if ch is not None else 'unknown channel'}")
+    em = ui.embed(f"🪝  Webhooks ({len(hooks)})", "\n".join(lines), "info",
+                  footer=f"{ui.FOOTER} • webhooks")
+    em.add_field(name="Remove",
+                 value=(f"`{PREFIX}webhooks delete <id>` · "
+                        f"`{PREFIX}webhooks delete all`"),
+                 inline=False)
+    await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="rank", aliases=["lvl", "card"])
@@ -4293,6 +4657,8 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_whitelist.error
 @cmd_say.error
 @cmd_help2.error
+@cmd_msgraid.error
+@cmd_webhooks.error
 @cmd_explode.error
 @cmd_purge.error
 @cmd_mute.error
