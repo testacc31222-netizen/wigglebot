@@ -395,11 +395,12 @@ document.addEventListener('submit', function(e) {
   var isSwitch = btn && btn.classList.contains('sw');
   var orig = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; }
-  fetch(f.action, {method: 'POST', body: new FormData(f), credentials: 'same-origin'})
+  var actionUrl = f.getAttribute('action') || '';
+  fetch(actionUrl, {method: 'POST', body: new FormData(f), credentials: 'same-origin'})
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); })
     .then(function() {
       var path = '';
-      try { path = new URL(f.action, location.origin).pathname; }
+      try { path = new URL(actionUrl, location.origin).pathname; }
       catch (err) { path = f.getAttribute('action') || ''; }
       if (path.indexOf('/api/mod') === 0 || path.indexOf('/api/whitelist') === 0 ||
           path.indexOf('/api/rolemenu') === 0 || path.indexOf('/api/giveaway') === 0 ||

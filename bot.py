@@ -5089,6 +5089,15 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
         await ctx.send(embed=ui.err(f"Command error: {error}"))
 
 
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
+    """Silence typos like `.hel`, keep real errors visible in the console."""
+    if isinstance(error, commands.CommandNotFound):
+        return
+    print(f"[cmd] {getattr(ctx.command, 'name', '?')}: "
+          f"{type(error).__name__}: {error}")
+
+
 @bot.check
 async def globally_enabled(ctx: commands.Context) -> bool:
     if bot_enabled:
