@@ -267,6 +267,7 @@ DEFAULT_GUILD_CONFIG = {
     "msgraid_action": "lockdown",  # lockdown | timeout | none
     "msgraid_purge": True,       # wipe the offender's recent messages
     "msgraid_webhook_delete": True,  # auto-delete a flooding webhook
+    "webhook_watch": True,       # alert on every webhook create/edit/delete
     # --- warning system (staff tooling) ---
     "warn_mute_at": 3,           # 3 active warns -> timeout (0 = off)
     "warn_kick_at": 7,           # 7 active warns -> kick (0 = off)
@@ -382,6 +383,7 @@ join_times: dict[int, deque] = defaultdict(deque)   # guild_id -> deque[datetime
 raid_active: dict[int, bool] = defaultdict(bool)
 raid_lock_task: dict[int, asyncio.Task] = {}
 previous_verification: dict[int, discord.VerificationLevel] = {}
+perm_snapshot: dict[int, dict[int, tuple[int, int]]] = {}  # guild -> channel -> (@everyone allow, deny)
 invite_cache: dict[int, dict[str, int]] = {}        # guild_id -> {invite_code: uses}
 join_invite: dict[int, dict[int, str]] = defaultdict(dict)  # guild_id -> {member_id: invite_code}
 invite_inviter: dict[str, int] = {}                 # invite_code -> inviter user id
@@ -521,9 +523,13 @@ async def lockdown_guild(guild: discord.Guild, reason: str = "Raid detected") ->
     """Deny SendMessages for @everyone in every text channel. Returns count locked."""
     everyone = guild.default_role
     locked = 0
+    snap = perm_snapshot.setdefault(guild.id, {})
     for channel in guild.text_channels:
         try:
             overwrite = channel.overwrites_for(everyone)
+            if channel.id not in snap:
+                allow, deny = overwrite.pair()
+                snap[channel.id] = (allow.value, deny.value)
             if overwrite.send_messages is False:
                 continue
             await channel.set_permissions(
@@ -555,11 +561,21 @@ async def lockdown_guild(guild: discord.Guild, reason: str = "Raid detected") ->
 
 
 async def unlock_guild(guild: discord.Guild, reason: str = "Raid over") -> int:
-    """Restore @everyone send_messages to inherit. Returns count unlocked."""
+    """Restore the exact pre-lockdown @everyone perms. Returns count restored."""
     everyone = guild.default_role
     unlocked = 0
+    snap = perm_snapshot.pop(guild.id, None)
     for channel in guild.text_channels:
         try:
+            if snap and channel.id in snap:
+                allow_v, deny_v = snap[channel.id]
+                restored = discord.PermissionOverwrite.from_pair(
+                    discord.Permissions(allow_v), discord.Permissions(deny_v))
+                await channel.set_permissions(
+                    everyone, overwrite=restored,
+                    reason=f"Anti-raid unlock (snapshot): {reason}")
+                unlocked += 1
+                continue
             overwrite = channel.overwrites_for(everyone)
             if overwrite.send_messages is not False:
                 continue
@@ -2331,6 +2347,55 @@ async def respond_to_msg_raid(message: discord.Message, cfg: dict, count: int) -
     track(guild.id, "mod", action="raid")
 
 
+@bot.event
+async def on_webhooks_update(channel: discord.abc.GuildChannel) -> None:
+    """Alert on every webhook create/edit/delete — trusted or not."""
+    guild = getattr(channel, "guild", None)
+    if guild is None or not bot_enabled:
+        return
+    cfg = get_config(guild.id)
+    if not cfg.get("webhook_watch", True):
+        return
+    actor = None
+    target = None
+    action = "changed"
+    names = {
+        discord.AuditLogAction.webhook_create: "created",
+        discord.AuditLogAction.webhook_delete: "deleted",
+        discord.AuditLogAction.webhook_update: "edited",
+    }
+    try:
+        async for entry in guild.audit_logs(limit=8):
+            if entry.action not in names:
+                continue
+            age = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
+            if age > 40:
+                break
+            actor = entry.user
+            target = entry.target
+            action = names[entry.action]
+            break
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    name = getattr(target, "name", None) or getattr(target, "id", "?")
+    wid = getattr(target, "id", "?")
+    who = f"{actor.mention} (`{actor.id}`)" if actor is not None else "**unknown** (check audit log)"
+    em = ui.embed(
+        f"🪝 Webhook {action}",
+        (f"**Where:** {channel.mention}\n"
+         f"**Name:** {name}\n"
+         f"**ID:** `{wid}`\n"
+         f"**By:** {who}"),
+        "warning" if action != "deleted" else "info",
+        footer=f"{ui.FOOTER} • webhook watch")
+    if action == "created":
+        em.add_field(name="If this wasn't you",
+                     value=(f"`{PREFIX}webhooks delete {wid}` — webhook watchers catch "
+                            "new hooks even before they spam."),
+                     inline=False)
+    await send_log(guild, "", event="webhook", embed=em)
+
+
 # ---------- commands ----------
 
 
@@ -2429,7 +2494,12 @@ async def cmd_status(ctx: commands.Context) -> None:
     em.add_field(name="Webhooks",
                  value=(f"{len(hooks)} · auto-delete "
                         f"{'on' if cfg.get('msgraid_webhook_delete', True) else 'off'}"
+                        f" · watch {'on' if cfg.get('webhook_watch', True) else 'off'}"
                         if hooks is not None else "unknown (no Manage Webhooks)"),
+                 inline=True)
+    snap = perm_snapshot.get(ctx.guild.id)
+    em.add_field(name="Recovery snapshot",
+                 value=(f"{len(snap)} channel(s)" if snap else "none (armed on lockdown)"),
                  inline=True)
     last = msg_raid_state.get(ctx.guild.id)
     if last:
@@ -2477,12 +2547,13 @@ async def cmd_msgraid(ctx: commands.Context, setting: str = "", value: str = "")
                 f"`{PREFIX}msgraid action lockdown|timeout|none`", "Message guard"))
             return
         update_config(ctx.guild.id, msgraid_action=v)
-    elif s in ("purge", "webhook"):
+    elif s in ("purge", "webhook", "watch"):
         if v not in ("on", "off"):
             await ctx.send(embed=ui.err(
                 f"`{PREFIX}msgraid {s} on|off`", "Message guard"))
             return
-        key = "msgraid_purge" if s == "purge" else "msgraid_webhook_delete"
+        key = {"purge": "msgraid_purge", "webhook": "msgraid_webhook_delete",
+               "watch": "webhook_watch"}[s]
         update_config(ctx.guild.id, **{key: v == "on"})
     elif s:
         await ctx.send(embed=ui.err(
@@ -2504,13 +2575,17 @@ async def cmd_msgraid(ctx: commands.Context, setting: str = "", value: str = "")
     em.add_field(name="Delete webhook",
                  value=("on" if cfg.get("msgraid_webhook_delete", True) else "off"),
                  inline=True)
+    em.add_field(name="Webhook watch",
+                 value=("on" if cfg.get("webhook_watch", True) else "off"),
+                 inline=True)
     em.add_field(name="Timeout length",
                  value=f"{cfg.get('timeout_duration_minutes', 10)} min", inline=True)
     em.add_field(name="Settings",
                  value=(f"`{PREFIX}msgraid on|off` · `{PREFIX}msgraid count 8` · "
                         f"`{PREFIX}msgraid seconds 5`\n"
                         f"`{PREFIX}msgraid action lockdown|timeout|none` · "
-                        f"`{PREFIX}msgraid purge on|off` · `{PREFIX}msgraid webhook on|off`"),
+                        f"`{PREFIX}msgraid purge on|off` · `{PREFIX}msgraid webhook on|off`\n"
+                        f"`{PREFIX}msgraid watch on|off` (alert on any new webhook)"),
                  inline=False)
     await ctx.send(embed=em)
 

@@ -601,6 +601,22 @@ def setup(bm):
                     await message.edit(embed=ui.embed(claim['title'], session_description(claim), 'brand'),
                                        view=view, allowed_mentions=discord.AllowedMentions.none())
                     session_count += 1
+                except discord.NotFound:
+                    dead = claim.get('thread')
+
+                    def _clear_thread(store_g, key=key):
+                        c = store_g.get('claims', {}).get(key)
+                        if c:
+                            c['thread'] = None
+                            c['thread_missing'] = True
+                        return True
+
+                    try:
+                        ledger.change(gid, _clear_thread)
+                    except Exception as cleanup_exc:
+                        print(f'[quest-update] could not clean session {key}: '
+                              f'{type(cleanup_exc).__name__}', flush=True)
+                    print(f'[quest-update] deleted thread cleaned up thread={dead}', flush=True)
                 except discord.HTTPException as exc:
                     print(f'[quest-update] session refresh failed thread={claim["thread"]}: {type(exc).__name__}', flush=True)
             matches = [c['name'] for c in g.get('challenges', {}).values() if timed_play_quest(c)]
