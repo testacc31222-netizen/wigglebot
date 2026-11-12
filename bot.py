@@ -4117,15 +4117,34 @@ async def _google_tts_bytes(text: str) -> bytes:
 
 
 def _ffmpeg_path() -> str | None:
-    import shutil as _sh
-    found = _sh.which("ffmpeg")
-    if found:
-        return found
+    # Prefer imageio's bundled static ffmpeg; some hosts ship a stub /usr/bin/ffmpeg
+    # that exits silently, which looks like "the bot is in VC but says nothing".
     try:
         import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except ImportError:
-        return None
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.exists(exe):
+            return exe
+    except Exception:
+        pass
+    import shutil as _sh
+    return _sh.which("ffmpeg")
+
+
+def _write_tone(path: str, seconds: float = 2.0, freq: int = 440) -> None:
+    """Write a simple stereo sine-wave WAV for an audible voice test."""
+    import math
+    import struct
+    import wave
+    rate = 48000
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(2)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        frames = bytearray()
+        for i in range(int(rate * seconds)):
+            sample = int(32767 * 0.25 * math.sin(2 * math.pi * freq * i / rate))
+            frames += struct.pack("<hh", sample, sample)
+        wav.writeframes(bytes(frames))
 
 
 async def _ensure_voice(guild: discord.Guild) -> discord.VoiceClient | None:
@@ -4227,9 +4246,17 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
                 pass
             last_voice_note = f"ffmpeg start {type(exc).__name__}: {exc}"[:300]
             return f"ffmpeg couldn't start ({type(exc).__name__})"
+        def _after_play(err: Exception | None) -> None:
+            if err is not None:
+                print(f"[voice] playback error: {type(err).__name__}: {err}", flush=True)
+            if os.path.exists(mp3):
+                try:
+                    os.remove(mp3)
+                except OSError:
+                    pass
+
         try:
-            vc.play(source,
-                    after=lambda e: os.remove(mp3) if os.path.exists(mp3) else None)
+            vc.play(source, after=_after_play)
         except discord.ClientException:
             try:
                 os.remove(mp3)
@@ -4336,6 +4363,20 @@ async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
         await ctx.send(embed=ui.info(f"`{PREFIX}speak <text>` — join a voice channel with "
                                      f"`{PREFIX}vcjoin` first.", "Speak"))
         return
+    # Pull the bot into the invoker's channel so they actually hear it.
+    author_ch = (ctx.author.voice.channel
+                 if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
+    if author_ch is not None:
+        try:
+            vc = ctx.guild.voice_client
+            if vc and vc.channel and vc.channel.id != author_ch.id:
+                await vc.move_to(author_ch)
+            elif not vc:
+                await author_ch.connect()
+            update_config(ctx.guild.id, mod_vc_channel_id=author_ch.id)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            await ctx.send(embed=ui.warn(f"I couldn't join {author_ch.mention}: {exc}", "Voice"))
+            return
     try:
         status = await speak_text(ctx.guild, text)
     except Exception as exc:
@@ -4378,27 +4419,50 @@ async def cmd_vcleave(ctx: commands.Context) -> None:
 @bot.command(name="voicediag")
 @trusted_only()
 async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
-    """Voice/TTS diagnosis. Usage: .voicediag | .voicediag test (staff only)."""
+    """Voice/TTS diagnosis. Usage: .voicediag | .voicediag test | .voicediag tone (staff only)."""
     global last_voice_note
+    action = run.strip().lower()
     vc = ctx.guild.voice_client if ctx.guild else None
     cfg = get_config(ctx.guild.id)
     ffmpeg_exe = _ffmpeg_path()
+    state = ctx.guild.me.voice if ctx.guild else None
     try:
         import edge_tts
         edge_ver = getattr(edge_tts, "__version__", "installed")
     except ImportError:
         edge_ver = "MISSING"
+    try:
+        import importlib.metadata as _md
+        davey_ver = _md.version("davey")
+    except Exception:
+        davey_ver = "MISSING"
+    dave_active = bool(vc and getattr(vc, "dave_session", None))
+    author_ch = (ctx.author.voice.channel
+                 if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
     lines = [
         f"**In voice:** {('yes — ' + vc.channel.mention) if vc and vc.channel else 'no'}",
         f"**Connected:** {'yes' if vc and vc.is_connected() else 'no'}",
         f"**Playing:** {'yes' if vc and vc.is_playing() else 'no'}",
+        f"**Server mute / deafen:** "
+        f"{'MUTED ⚠️' if state and state.mute else 'ok'} / "
+        f"{'DEAFENED ⚠️' if state and state.deaf else 'ok'}",
+        f"**Self mute / deafen:** "
+        f"{'muted' if state and state.self_mute else 'ok'} / "
+        f"{'deafened' if state and state.self_deaf else 'ok'}",
+        f"**DAVE encryption:** {'active' if dave_active else 'NOT ACTIVE ⚠️'} "
+        f"(davey `{davey_ver}`)",
         f"**ffmpeg:** `{ffmpeg_exe or 'MISSING'}`",
         f"**edge-tts:** `{edge_ver}`",
         f"**Last attempt:** {last_voice_note}",
     ]
+    if author_ch and vc and vc.channel and author_ch.id != vc.channel.id:
+        lines.append(f"⚠️ **You're in {author_ch.mention}, I'm in {vc.channel.mention} — "
+                     f"move to my channel or use `{PREFIX}speak` to pull me over.**")
+    elif vc and vc.channel:
+        lines.append(f"**Members in my VC:** {len(vc.channel.members)}")
     em = ui.embed("🎙️ Voice diagnostics", "\n".join(lines), "info",
                   footer=f"{ui.FOOTER} • voice")
-    if run.strip().lower() in ("test", "check"):
+    if action in ("test", "check"):
         results = []
         voice = VOICES.get(cfg.get("tts_voice", "aria"), "en-US-AriaNeural")
         t0 = time.perf_counter()
@@ -4425,10 +4489,29 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
         except Exception as exc:
             results.append(f"❌ fallback google — `{type(exc).__name__}`")
         em.add_field(name="Provider test", value="\n".join(results), inline=False)
-        em.add_field(name="Fix",
-                     value=("If edge fails but fallback works, `.speak` already "
-                            "uses the fallback automatically."),
-                     inline=False)
+    if action in ("tone", "beep", "play"):
+        if not vc or not vc.channel:
+            em.add_field(name="Tone test", value="I'm not in a voice channel — `.vcjoin` first.",
+                         inline=False)
+        else:
+            import tempfile
+            wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+            wav.close()
+            try:
+                _write_tone(wav.name)
+                source = discord.FFmpegPCMAudio(wav.name, executable=ffmpeg_exe)
+                vc.play(source, after=lambda e: os.remove(wav.name)
+                        if os.path.exists(wav.name) else None)
+                em.add_field(
+                    name="Tone test",
+                    value=(f"Played a 2-second beep in {vc.channel.mention}.\n"
+                           "**Heard it?** Voice output works — the issue is TTS text.\n"
+                           "**Heard nothing?** Check server mute above, or DAVE."),
+                    inline=False)
+            except Exception as exc:
+                em.add_field(name="Tone test",
+                             value=f"❌ `{type(exc).__name__}: {str(exc)[:150]}`",
+                             inline=False)
     await ctx.send(embed=em)
 
 
