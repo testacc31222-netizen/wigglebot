@@ -4437,6 +4437,16 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
     except Exception:
         davey_ver = "MISSING"
     dave_active = bool(vc and getattr(vc, "dave_session", None))
+    conn = getattr(vc, "_connection", None) if vc else None
+    dave_proto = getattr(conn, "dave_protocol_version", 0) if conn else 0
+    dave_ready = bool(getattr(conn, "can_encrypt", False)) if conn else False
+    if dave_proto == 0:
+        dave_line = f"not in use (protocol v0 — normal) · davey `{davey_ver}`"
+    elif dave_active and dave_ready:
+        dave_line = f"active (protocol v{dave_proto}) · davey `{davey_ver}`"
+    else:
+        dave_line = (f"⚠️ protocol v{dave_proto} but session "
+                     f"{'ready' if dave_active else 'NOT established'} · davey `{davey_ver}`")
     author_ch = (ctx.author.voice.channel
                  if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
     lines = [
@@ -4449,8 +4459,7 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
         f"**Self mute / deafen:** "
         f"{'muted' if state and state.self_mute else 'ok'} / "
         f"{'deafened' if state and state.self_deaf else 'ok'}",
-        f"**DAVE encryption:** {'active' if dave_active else 'NOT ACTIVE ⚠️'} "
-        f"(davey `{davey_ver}`)",
+        f"**DAVE encryption:** {dave_line}",
         f"**ffmpeg:** `{ffmpeg_exe or 'MISSING'}`",
         f"**edge-tts:** `{edge_ver}`",
         f"**Last attempt:** {last_voice_note}",
