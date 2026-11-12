@@ -751,6 +751,8 @@ async def on_ready() -> None:
                     else:
                         await ch.connect()
                     print(f"[vc] rejoined {ch.name} in {guild.name}")
+                    await asyncio.sleep(2)
+                    print(f"[vc] crypto: {_voice_crypto_note(guild.voice_client)}", flush=True)
                 except (discord.Forbidden, discord.HTTPException) as exc:
                     print(f"[vc] rejoin failed: {exc}")
 
@@ -4147,6 +4149,19 @@ def _write_tone(path: str, seconds: float = 2.0, freq: int = 440) -> None:
         wav.writeframes(bytes(frames))
 
 
+def _voice_crypto_note(vc: discord.VoiceClient | None) -> str:
+    conn = getattr(vc, "_connection", None) if vc else None
+    if conn is None:
+        return "no voice connection"
+    proto = getattr(conn, "dave_protocol_version", 0)
+    session = getattr(conn, "dave_session", None)
+    ready = bool(getattr(conn, "can_encrypt", False))
+    mode = getattr(conn, "mode", "?")
+    latency = getattr(vc, "latency", 0.0) or 0.0
+    return (f"dave_proto={proto} session={'yes' if session else 'no'} "
+            f"can_encrypt={ready} mode={mode} latency={latency:.2f}s")
+
+
 async def _ensure_voice(guild: discord.Guild) -> discord.VoiceClient | None:
     """Return a live voice client, reconnecting if the link dropped."""
     vc = guild.voice_client
@@ -4174,6 +4189,7 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
     if not vc or not vc.channel:
         last_voice_note = "not connected to voice"
         return "not in voice — `.vcjoin` first"
+    print(f"[voice] state before play: {_voice_crypto_note(vc)}", flush=True)
     ffmpeg_exe = _ffmpeg_path()
     if not ffmpeg_exe:
         last_voice_note = "ffmpeg missing"
