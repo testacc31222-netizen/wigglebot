@@ -4070,64 +4070,182 @@ async def cmd_vcjoin(ctx: commands.Context, channel: str = "") -> None:
         await ctx.send(embed=ui.err(f"I can't join (need Connect permission): {exc}"))
 
 
+last_voice_note = "no attempt yet"
+
+
+def _tts_chunks(text: str, limit: int = 180) -> list[str]:
+    """Split text into chunks the Google TTS endpoint accepts (~200 chars)."""
+    words = text.split()
+    chunks: list[str] = []
+    current = ""
+    for word in words:
+        if len(current) + len(word) + 1 > limit:
+            if current:
+                chunks.append(current)
+            current = word[:limit]
+        else:
+            current = f"{current} {word}".strip()
+    if current:
+        chunks.append(current)
+    return chunks or [text[:limit]]
+
+
+async def _google_tts_bytes(text: str) -> bytes:
+    """Free fallback voice: Google Translate TTS. Returns raw MP3 bytes."""
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0 Safari/537.36"),
+        "Referer": "https://translate.google.com/",
+    }
+    timeout = aiohttp.ClientTimeout(total=25)
+    parts: list[bytes] = []
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+        for chunk in _tts_chunks(text):
+            async with session.get(
+                "https://translate.google.com/translate_tts",
+                params={"ie": "UTF-8", "client": "tw-ob", "tl": "en",
+                        "ttsspeed": "1", "q": chunk},
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"google tts HTTP {resp.status}")
+                data = await resp.read()
+                if len(data) < 500 or data[:1] == b"<":
+                    raise RuntimeError("google tts returned no audio")
+                parts.append(data)
+    return b"".join(parts)
+
+
+def _ffmpeg_path() -> str | None:
+    import shutil as _sh
+    found = _sh.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        return None
+
+
+async def _ensure_voice(guild: discord.Guild) -> discord.VoiceClient | None:
+    """Return a live voice client, reconnecting if the link dropped."""
+    vc = guild.voice_client
+    if vc and vc.is_connected():
+        return vc
+    cid = get_config(guild.id).get("mod_vc_channel_id")
+    channel = guild.get_channel(cid) if cid else None
+    if not isinstance(channel, discord.VoiceChannel):
+        return None
+    try:
+        if vc:
+            await vc.disconnect(force=True)
+        return await channel.connect()
+    except Exception as exc:
+        print(f"[voice] reconnect failed: {type(exc).__name__}: {exc}", flush=True)
+        return guild.voice_client
+
+
 async def speak_text(guild: discord.Guild, text: str) -> str:
     """Play TTS in the bot's current VC. Returns status for logs/errors."""
+    global last_voice_note
     import re as _re
     import tempfile as _tf
-    vc = guild.voice_client
+    vc = await _ensure_voice(guild)
     if not vc or not vc.channel:
+        last_voice_note = "not connected to voice"
         return "not in voice — `.vcjoin` first"
-    import shutil as _sh
-    if not _sh.which("ffmpeg"):
-        try:
-            import imageio_ffmpeg  # noqa
-        except ImportError:
-            return "no ffmpeg on this host — redeploy so requirements install"
+    ffmpeg_exe = _ffmpeg_path()
+    if not ffmpeg_exe:
+        last_voice_note = "ffmpeg missing"
+        return "no ffmpeg on this host — redeploy so requirements install"
     clean = _re.sub(r"[*_~>|`]", "", text)[:300] or "hello"
     voice = VOICES.get(get_config(guild.id).get("tts_voice", "aria"), "en-US-AriaNeural")
     mp3 = None
-    tts_err = ""
-    for attempt_voice in (voice, "en-US-GuyNeural"):
-        try:
-            import edge_tts
-            tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
-            tmp.close()
-            await edge_tts.Communicate(clean, voice=attempt_voice).save(tmp.name)
-            import os as _os
-            if _os.path.getsize(tmp.name) < 500:
-                raise ValueError("empty audio back from TTS")
-            mp3 = tmp.name
-            break
-        except Exception as exc:
-            tts_err = f"{type(exc).__name__}: {exc}"[:200]
-            print(f"[voice] TTS failed ({attempt_voice}): {tts_err}")
-            try:
-                _os.remove(tmp.name)
-            except Exception:
-                pass
-    if not mp3:
-        return f"TTS gave silence ({tts_err or 'unknown'}). Try `.speak hello` to test."
+    provider = ""
+    errors: list[str] = []
+
+    # 1) Edge neural voice (best quality — may be blocked at the endpoint).
+    tmp_name = None
     try:
         import edge_tts
-        import imageio_ffmpeg
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    except ImportError:
-        return "voice engine missing — redeploy so requirements install"
-    import os as _os2
+        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tmp_name = tmp.name
+        tmp.close()
+        await asyncio.wait_for(
+            edge_tts.Communicate(clean, voice=voice).save(tmp_name), timeout=20)
+        if os.path.getsize(tmp_name) < 500:
+            raise ValueError("empty audio back from TTS")
+        mp3 = tmp_name
+        provider = f"edge/{voice}"
+    except Exception as exc:
+        errors.append(f"edge {type(exc).__name__}")
+        print(f"[voice] edge TTS failed: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
+        if tmp_name and os.path.exists(tmp_name):
+            try:
+                os.remove(tmp_name)
+            except OSError:
+                pass
+
+    # 2) Google Translate TTS fallback (no key, works from most hosts).
+    if not mp3:
+        google_tmp = None
+        try:
+            data = await _google_tts_bytes(clean)
+            tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
+            google_tmp = tmp.name
+            tmp.close()
+            with open(google_tmp, "wb") as fh:
+                fh.write(data)
+            if os.path.getsize(google_tmp) < 500:
+                raise ValueError("empty audio back from fallback")
+            mp3 = google_tmp
+            provider = "google"
+        except Exception as exc:
+            errors.append(f"google {type(exc).__name__}")
+            print(f"[voice] fallback TTS failed: {type(exc).__name__}: {str(exc)[:160]}",
+                  flush=True)
+            if google_tmp and os.path.exists(google_tmp):
+                try:
+                    os.remove(google_tmp)
+                except OSError:
+                    pass
+
+    if not mp3:
+        last_voice_note = " · ".join(errors)[:300] or "unknown error"
+        return f"TTS gave silence ({last_voice_note}). Run `.voicediag test`."
+
     try:
         while vc.is_playing():
             await asyncio.sleep(0.5)
         try:
-            vc.play(discord.FFmpegPCMAudio(mp3, executable=ffmpeg_exe),
-                    after=lambda e: _os2.remove(mp3) if _os2.path.exists(mp3) else None)
-        except discord.ClientException:
+            source = discord.FFmpegPCMAudio(mp3, executable=ffmpeg_exe)
+        except Exception as exc:
             try:
-                _os2.remove(mp3)
+                os.remove(mp3)
             except OSError:
                 pass
+            last_voice_note = f"ffmpeg start {type(exc).__name__}: {exc}"[:300]
+            return f"ffmpeg couldn't start ({type(exc).__name__})"
+        try:
+            vc.play(source,
+                    after=lambda e: os.remove(mp3) if os.path.exists(mp3) else None)
+        except discord.ClientException:
+            try:
+                os.remove(mp3)
+            except OSError:
+                pass
+            last_voice_note = "voice client busy / link died"
             return "already playing — wait a sec, or the voice link died (rejoin with `.vcjoin`)"
+        last_voice_note = f"playing via {provider}"
+        print(f"[voice] speaking via {provider} ({len(text)} chars)", flush=True)
         return "speaking"
     except Exception as exc:
+        last_voice_note = f"playback {type(exc).__name__}: {exc}"[:300]
+        try:
+            os.remove(mp3)
+        except OSError:
+            pass
         return f"voice failed: {type(exc).__name__}"
 
 
@@ -4218,7 +4336,10 @@ async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
         await ctx.send(embed=ui.info(f"`{PREFIX}speak <text>` — join a voice channel with "
                                      f"`{PREFIX}vcjoin` first.", "Speak"))
         return
-    status = await speak_text(ctx.guild, text)
+    try:
+        status = await speak_text(ctx.guild, text)
+    except Exception as exc:
+        status = f"voice failed: {type(exc).__name__}: {exc}"[:200]
     if status != "speaking":
         await ctx.send(embed=ui.warn(f"Voice playback: {status}", "🔇 Voice"))
 
@@ -4252,6 +4373,63 @@ async def cmd_vcleave(ctx: commands.Context) -> None:
         pass
     update_config(ctx.guild.id, mod_vc_channel_id=None)
     await ctx.send(embed=ui.ok("Left the voice channel.", "👋 Voice"))
+
+
+@bot.command(name="voicediag")
+@trusted_only()
+async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
+    """Voice/TTS diagnosis. Usage: .voicediag | .voicediag test (staff only)."""
+    global last_voice_note
+    vc = ctx.guild.voice_client if ctx.guild else None
+    cfg = get_config(ctx.guild.id)
+    ffmpeg_exe = _ffmpeg_path()
+    try:
+        import edge_tts
+        edge_ver = getattr(edge_tts, "__version__", "installed")
+    except ImportError:
+        edge_ver = "MISSING"
+    lines = [
+        f"**In voice:** {('yes — ' + vc.channel.mention) if vc and vc.channel else 'no'}",
+        f"**Connected:** {'yes' if vc and vc.is_connected() else 'no'}",
+        f"**Playing:** {'yes' if vc and vc.is_playing() else 'no'}",
+        f"**ffmpeg:** `{ffmpeg_exe or 'MISSING'}`",
+        f"**edge-tts:** `{edge_ver}`",
+        f"**Last attempt:** {last_voice_note}",
+    ]
+    em = ui.embed("🎙️ Voice diagnostics", "\n".join(lines), "info",
+                  footer=f"{ui.FOOTER} • voice")
+    if run.strip().lower() in ("test", "check"):
+        results = []
+        voice = VOICES.get(cfg.get("tts_voice", "aria"), "en-US-AriaNeural")
+        t0 = time.perf_counter()
+        try:
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+            name = tmp.name
+            tmp.close()
+            import edge_tts
+            await asyncio.wait_for(
+                edge_tts.Communicate("voice test one two", voice=voice).save(name),
+                timeout=20)
+            size = os.path.getsize(name)
+            os.remove(name)
+            results.append(f"✅ edge `{voice}` — {size} bytes "
+                           f"({time.perf_counter() - t0:.1f}s)")
+        except Exception as exc:
+            results.append(f"❌ edge — `{type(exc).__name__}`")
+        t1 = time.perf_counter()
+        try:
+            data = await _google_tts_bytes("voice test one two")
+            results.append(f"✅ fallback google — {len(data)} bytes "
+                           f"({time.perf_counter() - t1:.1f}s)")
+        except Exception as exc:
+            results.append(f"❌ fallback google — `{type(exc).__name__}`")
+        em.add_field(name="Provider test", value="\n".join(results), inline=False)
+        em.add_field(name="Fix",
+                     value=("If edge fails but fallback works, `.speak` already "
+                            "uses the fallback automatically."),
+                     inline=False)
+    await ctx.send(embed=em)
 
 
 @bot.command(name="setlobby")
