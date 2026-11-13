@@ -213,8 +213,12 @@ def crypto_note(vc: discord.VoiceClient | None) -> str:
     conn = getattr(vc, "_connection", None) if vc else None
     if conn is None:
         return "no connection"
+    session = getattr(conn, "dave_session", None)
+    status = getattr(session, "status", "?") if session else "?"
+    epoch = getattr(session, "epoch", "?") if session else "?"
     return (f"dave_proto={getattr(conn, 'dave_protocol_version', 0)} "
-            f"session={'yes' if getattr(conn, 'dave_session', None) else 'no'} "
+            f"session={'yes' if session else 'no'} "
+            f"status={status} epoch={epoch} "
             f"can_encrypt={bool(getattr(conn, 'can_encrypt', False))} "
             f"mode={getattr(conn, 'mode', '?')}")
 
@@ -368,6 +372,10 @@ def status(guild: discord.Guild) -> dict:
         "self_deaf": bool(state and state.self_deaf),
         "dave_proto": getattr(conn, "dave_protocol_version", 0) if conn else 0,
         "dave_session": bool(getattr(conn, "dave_session", None)) if conn else False,
+        "dave_status": (str(getattr(getattr(conn, "dave_session", None), "status", "?"))
+                        if conn else "?"),
+        "dave_epoch": (getattr(getattr(conn, "dave_session", None), "epoch", "?")
+                       if conn else "?"),
         "can_encrypt": bool(getattr(conn, "can_encrypt", False)) if conn else False,
         "davey": davey_ver,
         "edge": edge_ver,

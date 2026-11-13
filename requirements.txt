@@ -1,4 +1,8 @@
 discord.py[voice]>=2.3.2
+# discord.py 2.7.1 never calls davey's prepare/execute_transition, so davey 0.2+
+# leaves the MLS session inactive (can_encrypt=False) and Discord drops the
+# unencrypted audio. Stay on the 0.1.x API until discord.py supports 0.2.
+davey>=0.1.7,<0.2
 python-dotenv>=1.0.0
 flask>=3.0.0
 PyNaCl>=1.5.0,<1.6

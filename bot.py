@@ -4231,9 +4231,11 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
     elif info["dave_session"] and info["can_encrypt"]:
         dave_line = f"active (protocol v{info['dave_proto']}) · davey `{info['davey']}`"
     else:
-        dave_line = (f"⚠️ protocol v{info['dave_proto']} · session "
-                     f"{'ready' if info['dave_session'] else 'NOT established'} · "
-                     f"davey `{info['davey']}`")
+        dave_line = (f"❌ protocol v{info['dave_proto']} · session "
+                     f"{'present' if info['dave_session'] else 'NOT established'} · "
+                     f"status `{info['dave_status']}` epoch `{info['dave_epoch']}` · "
+                     f"davey `{info['davey']}`\n"
+                     f"*(audio is unencrypted, so Discord discards it)*")
 
     lines = [
         f"**In voice:** {('yes — ' + channel.mention) if channel else 'no'}",
