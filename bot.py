@@ -4098,7 +4098,8 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
 def _voice_tag(name: str) -> str:
     m = voice_tts.meta(name)
     icon = "♀" if m.get("gender") == "female" else "♂"
-    return f"`{name}`{icon}"
+    extra = "♡" if name in voice_tts.VOICE_PRESETS else ""
+    return f"`{name}`{icon}{extra}"
 
 
 @bot.command(name="voice")
@@ -4118,10 +4119,18 @@ async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
             current += f"\n*`{cur}` is a legacy name; it now uses `{alias}`.*"
         status = voice_tts.status(ctx.guild)
         provider = status["last_provider"] or "not used yet"
+        base_rate = int(cfg.get("tts_rate", 0))
+        base_pitch = int(cfg.get("tts_pitch", 0))
+        eff_rate, eff_pitch = voice_tts.effective_tone(cur, base_rate, base_pitch)
+        tone_line = (f"**Speed:** `{base_rate:+d}%` · "
+                     f"**Pitch:** `{base_pitch:+d}Hz`")
+        if (eff_rate, eff_pitch) != (base_rate, base_pitch):
+            tone_line += (f" → `{eff_rate:+d}%` / `{eff_pitch:+d}Hz` "
+                          f"(soft preset)")
         desc = (f"{current}\n"
                 f"**Last provider:** `{provider}`\n"
-                f"**Speed:** `{int(cfg.get('tts_rate', 0)):+d}%` · "
-                f"**Pitch:** `{int(cfg.get('tts_pitch', 0)):+d}Hz`\n\n"
+                f"{tone_line}\n"
+                f"**Soft:** `{PREFIX}voice mommy` — Jenny, slower and lower ♡\n\n"
                 f"**Set:** `{PREFIX}voice <name>`\n"
                 f"**Preview only:** `{PREFIX}voice test <name>`\n"
                 f"**Tune:** `{PREFIX}voicespeed <±%>` · `{PREFIX}voicepitch <±Hz>`")
@@ -4156,7 +4165,11 @@ async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
 
     m = voice_tts.meta(name)
     spoken_name = m.get("alias", name).title()
-    sample = f"Hi, I'm {spoken_name}. This is how I sound."
+    if name == "mommy":
+        sample = ("Hey sweetie, I'm here. Come sit with me for a while. "
+                  "Everything is okay, I've got you.")
+    else:
+        sample = f"Hi, I'm {spoken_name}. This is how I sound."
     author_ch = (ctx.author.voice.channel
                  if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
     status = await voice_tts.speak(
@@ -4402,9 +4415,12 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
     vm = voice_tts.meta(cur_voice)
     voice_line = (f"`{voice_tts.display_name(cur_voice)}` → "
                   f"`{vm['neural']}` ({vm['gender']}, {vm['accent']})")
+    eff_rate, eff_pitch = voice_tts.effective_tone(
+        cur_voice, int(cfg.get("tts_rate", 0)), int(cfg.get("tts_pitch", 0)))
     lines = [
         f"**In voice:** {('yes — ' + channel.mention) if channel else 'no'}",
         f"**Voice:** {voice_line}",
+        f"**Tone:** `{eff_rate:+d}%` / `{eff_pitch:+d}Hz`",
         f"**Last provider:** `{info['last_provider'] or 'not used yet'}`",
         f"**Connected / playing:** "
         f"{'yes' if info['connected'] else 'no'} / {'yes' if info['playing'] else 'no'}",

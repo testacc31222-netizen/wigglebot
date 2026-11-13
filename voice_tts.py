@@ -31,6 +31,7 @@ VOICE_META: dict[str, dict[str, str]] = {
     # --- US English
     "aria":        {"neural": "en-US-AriaNeural",        "gender": "female", "accent": "US"},
     "jenny":       {"neural": "en-US-JennyNeural",       "gender": "female", "accent": "US"},
+    "mommy":       {"neural": "en-US-JennyNeural",       "gender": "female", "accent": "US", "preset": "soft"},
     "ava":         {"neural": "en-US-AvaNeural",         "gender": "female", "accent": "US"},
     "emma":        {"neural": "en-US-EmmaNeural",        "gender": "female", "accent": "US"},
     "michelle":    {"neural": "en-US-MichelleNeural",    "gender": "female", "accent": "US"},
@@ -71,6 +72,10 @@ VOICE_META: dict[str, dict[str, str]] = {
 }
 VOICES = {name: meta["neural"] for name, meta in VOICE_META.items()}
 LEGACY = {name for name, meta in VOICE_META.items() if "alias" in meta}
+# Voice-specific delivery. ``mommy`` is Jenny with a slower, lower, softer tone.
+VOICE_PRESETS: dict[str, dict[str, int]] = {
+    "mommy": {"rate": -18, "pitch": -6},
+}
 
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -96,6 +101,14 @@ def display_name(voice: str) -> str:
     m = meta(voice)
     alias = m.get("alias")
     return f"{voice} (legacy → {alias})" if alias else voice
+
+
+def effective_tone(voice: str, rate: int = 0, pitch: int = 0) -> tuple[int, int]:
+    """Apply a voice preset on top of the user's speed/pitch settings."""
+    preset = VOICE_PRESETS.get(voice)
+    if not preset:
+        return rate, pitch
+    return rate + preset["rate"], pitch + preset["pitch"]
 
 
 # ---------------------------------------------------------------- text helpers
@@ -204,6 +217,7 @@ async def synthesize(text: str, voice: str = "aria",
     global _edge_blocked_until
     spoken = clean_text(text) or "hello"
     gender = meta(voice).get("gender", "female")
+    rate, pitch = effective_tone(voice, rate, pitch)
     errors: list[str] = []
     edge_error: Exception | None = None
 
@@ -533,7 +547,8 @@ def status(guild: discord.Guild) -> dict:
 async def probe(voice: str = "aria") -> list[str]:
     """Test both TTS providers and the decode step. Returns display lines."""
     results: list[str] = []
-    for name, fn in (("edge", lambda: _edge_mp3("voice test one two", voice)),
+    rate, pitch = effective_tone(voice, 0, 0)
+    for name, fn in (("edge", lambda: _edge_mp3("voice test one two", voice, rate, pitch)),
                      ("google", lambda: _google_mp3("voice test one two"))):
         started = time.perf_counter()
         try:
