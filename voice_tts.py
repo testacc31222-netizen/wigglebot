@@ -31,7 +31,7 @@ VOICE_META: dict[str, dict[str, str]] = {
     # --- US English
     "aria":        {"neural": "en-US-AriaNeural",        "gender": "female", "accent": "US"},
     "jenny":       {"neural": "en-US-JennyNeural",       "gender": "female", "accent": "US"},
-    "mommy":       {"neural": "en-US-JennyNeural",       "gender": "female", "accent": "US", "preset": "soft"},
+    "mommy":       {"neural": "en-US-AvaNeural",         "gender": "female", "accent": "US", "preset": "soft"},
     "ava":         {"neural": "en-US-AvaNeural",         "gender": "female", "accent": "US"},
     "emma":        {"neural": "en-US-EmmaNeural",        "gender": "female", "accent": "US"},
     "michelle":    {"neural": "en-US-MichelleNeural",    "gender": "female", "accent": "US"},
@@ -72,9 +72,14 @@ VOICE_META: dict[str, dict[str, str]] = {
 }
 VOICES = {name: meta["neural"] for name, meta in VOICE_META.items()}
 LEGACY = {name for name, meta in VOICE_META.items() if "alias" in meta}
-# Voice-specific delivery. ``mommy`` is Jenny with a slower, lower, softer tone.
+# Voice-specific delivery. ``mommy`` is Ava with a slower, lower, softer tone.
 VOICE_PRESETS: dict[str, dict[str, int]] = {
-    "mommy": {"rate": -18, "pitch": -6},
+    "mommy": {"rate": -18, "pitch": -4},
+}
+# Gentle close-mic treatment for the ASMR-style voices. Applied to the decoded
+# PCM, so it cannot break playback if the filter is unsupported.
+VOICE_FILTERS: dict[str, str] = {
+    "mommy": "highpass=f=90,lowpass=f=5000,volume=0.80",
 }
 
 SAMPLE_RATE = 48000
@@ -278,7 +283,7 @@ def ffmpeg_path() -> str | None:
     return shutil.which("ffmpeg")
 
 
-async def to_pcm(mp3: bytes) -> bytes:
+async def to_pcm(mp3: bytes, audio_filter: str | None = None) -> bytes:
     """Decode MP3 bytes into raw 48 kHz stereo s16le PCM."""
     exe = ffmpeg_path()
     if not exe:
@@ -287,11 +292,13 @@ async def to_pcm(mp3: bytes) -> bytes:
     tmp.write(mp3)
     tmp.close()
     proc = None
+    args = [exe, "-v", "error", "-i", tmp.name]
+    if audio_filter:
+        args += ["-af", audio_filter]
+    args += ["-f", "s16le", "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "pipe:1"]
     try:
         proc = await asyncio.create_subprocess_exec(
-            exe, "-v", "error", "-i", tmp.name,
-            "-f", "s16le", "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
-            "pipe:1",
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -466,7 +473,7 @@ async def speak(guild: discord.Guild, text: str, *,
             _last_result = "stopped"
             return "cancelled"
         try:
-            pcm = await to_pcm(mp3)
+            pcm = await to_pcm(mp3, VOICE_FILTERS.get(voice))
         except Exception as exc:
             _last_result = f"decode failed: {exc}"[:300]
             return f"audio decode failed ({exc})"
@@ -553,7 +560,7 @@ async def probe(voice: str = "aria") -> list[str]:
         started = time.perf_counter()
         try:
             data = await fn()
-            pcm = await to_pcm(data)
+            pcm = await to_pcm(data, VOICE_FILTERS.get(voice))
             results.append(f"✅ {name} — {len(data)} MP3 bytes, "
                            f"{len(pcm) / BYTES_PER_SECOND:.1f}s audio "
                            f"({time.perf_counter() - started:.1f}s)")

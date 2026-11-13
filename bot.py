@@ -4130,7 +4130,7 @@ async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
         desc = (f"{current}\n"
                 f"**Last provider:** `{provider}`\n"
                 f"{tone_line}\n"
-                f"**Soft:** `{PREFIX}voice mommy` — Jenny, slower and lower ♡\n\n"
+                f"**Soft ASMR:** `{PREFIX}voice mommy` — Ava, slower, lower, close-mic ♡\n\n"
                 f"**Set:** `{PREFIX}voice <name>`\n"
                 f"**Preview only:** `{PREFIX}voice test <name>`\n"
                 f"**Tune:** `{PREFIX}voicespeed <±%>` · `{PREFIX}voicepitch <±Hz>`")
@@ -4166,8 +4166,8 @@ async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
     m = voice_tts.meta(name)
     spoken_name = m.get("alias", name).title()
     if name == "mommy":
-        sample = ("Hey sweetie, I'm here. Come sit with me for a while. "
-                  "Everything is okay, I've got you.")
+        sample = ("Hey sweetie, you're doing so well. Come here, let me take "
+                  "care of you. Everything is okay, I've got you.")
     else:
         sample = f"Hi, I'm {spoken_name}. This is how I sound."
     author_ch = (ctx.author.voice.channel
