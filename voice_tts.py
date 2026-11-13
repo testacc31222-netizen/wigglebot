@@ -25,16 +25,52 @@ import time
 import aiohttp
 import discord
 
-VOICES = {
-    "aria": "en-US-AriaNeural",
-    "jenny": "en-US-JennyNeural",
-    "guy": "en-US-GuyNeural",
-    "davis": "en-US-DavisNeural",
-    "jane": "en-US-JaneNeural",
-    "sara": "en-US-SaraNeural",
-    "tony": "en-US-TonyNeural",
-    "nancy": "en-US-NancyNeural",
+# Current Microsoft Edge voices (checked against edge_tts.list_voices()).
+# ``gender`` is used so the fallback never turns a male voice into a female one.
+VOICE_META: dict[str, dict[str, str]] = {
+    # --- US English
+    "aria":        {"neural": "en-US-AriaNeural",        "gender": "female", "accent": "US"},
+    "jenny":       {"neural": "en-US-JennyNeural",       "gender": "female", "accent": "US"},
+    "ava":         {"neural": "en-US-AvaNeural",         "gender": "female", "accent": "US"},
+    "emma":        {"neural": "en-US-EmmaNeural",        "gender": "female", "accent": "US"},
+    "michelle":    {"neural": "en-US-MichelleNeural",    "gender": "female", "accent": "US"},
+    "guy":         {"neural": "en-US-GuyNeural",         "gender": "male",   "accent": "US"},
+    "andrew":      {"neural": "en-US-AndrewNeural",      "gender": "male",   "accent": "US"},
+    "brian":       {"neural": "en-US-BrianNeural",       "gender": "male",   "accent": "US"},
+    "christopher": {"neural": "en-US-ChristopherNeural", "gender": "male",   "accent": "US"},
+    "eric":        {"neural": "en-US-EricNeural",        "gender": "male",   "accent": "US"},
+    "roger":       {"neural": "en-US-RogerNeural",       "gender": "male",   "accent": "US"},
+    "steffan":     {"neural": "en-US-SteffanNeural",     "gender": "male",   "accent": "US"},
+    # --- UK / Ireland
+    "libby":       {"neural": "en-GB-LibbyNeural",       "gender": "female", "accent": "UK"},
+    "sonia":       {"neural": "en-GB-SoniaNeural",       "gender": "female", "accent": "UK"},
+    "maisie":      {"neural": "en-GB-MaisieNeural",      "gender": "female", "accent": "UK"},
+    "ryan":        {"neural": "en-GB-RyanNeural",        "gender": "male",   "accent": "UK"},
+    "thomas":      {"neural": "en-GB-ThomasNeural",      "gender": "male",   "accent": "UK"},
+    "emily":       {"neural": "en-IE-EmilyNeural",       "gender": "female", "accent": "IE"},
+    "connor":      {"neural": "en-IE-ConnorNeural",      "gender": "male",   "accent": "IE"},
+    # --- Australia / Canada / India / NZ / South Africa
+    "natasha":     {"neural": "en-AU-NatashaNeural",     "gender": "female", "accent": "AU"},
+    "william":     {"neural": "en-AU-WilliamMultilingualNeural", "gender": "male", "accent": "AU"},
+    "clara":       {"neural": "en-CA-ClaraNeural",       "gender": "female", "accent": "CA"},
+    "liam":        {"neural": "en-CA-LiamNeural",        "gender": "male",   "accent": "CA"},
+    "neerja":      {"neural": "en-IN-NeerjaNeural",      "gender": "female", "accent": "IN"},
+    "prabhat":     {"neural": "en-IN-PrabhatNeural",     "gender": "male",   "accent": "IN"},
+    "molly":       {"neural": "en-NZ-MollyNeural",       "gender": "female", "accent": "NZ"},
+    "mitchell":    {"neural": "en-NZ-MitchellNeural",    "gender": "male",   "accent": "NZ"},
+    "leah":        {"neural": "en-ZA-LeahNeural",        "gender": "female", "accent": "ZA"},
+    "luke":        {"neural": "en-ZA-LukeNeural",        "gender": "male",   "accent": "ZA"},
+    # --- Legacy names (Microsoft retired these voices). They now map to the
+    # closest living voice so old configs keep working instead of silently
+    # falling back to Google's female voice.
+    "davis":       {"neural": "en-US-AndrewNeural", "gender": "male",   "accent": "US", "alias": "andrew"},
+    "tony":        {"neural": "en-US-BrianNeural",  "gender": "male",   "accent": "US", "alias": "brian"},
+    "jane":        {"neural": "en-US-EmmaNeural",   "gender": "female", "accent": "US", "alias": "emma"},
+    "sara":        {"neural": "en-US-AvaNeural",    "gender": "female", "accent": "US", "alias": "ava"},
+    "nancy":       {"neural": "en-US-MichelleNeural", "gender": "female", "accent": "US", "alias": "michelle"},
 }
+VOICES = {name: meta["neural"] for name, meta in VOICE_META.items()}
+LEGACY = {name for name, meta in VOICE_META.items() if "alias" in meta}
 
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -44,8 +80,22 @@ BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH
 _edge_blocked_until = 0.0
 _last_result = "idle"
 _last_provider = ""
+_last_voice = ""
 _last_pcm_seconds = 0.0
 _locks: dict[int, asyncio.Lock] = {}
+_generation: dict[int, int] = {}
+
+
+def meta(voice: str) -> dict[str, str]:
+    """Metadata for a voice key, falling back to aria."""
+    return VOICE_META.get(voice, VOICE_META["aria"])
+
+
+def display_name(voice: str) -> str:
+    """Human name, e.g. ``andrew`` or ``davis (legacy → andrew)``."""
+    m = meta(voice)
+    alias = m.get("alias")
+    return f"{voice} (legacy → {alias})" if alias else voice
 
 
 # ---------------------------------------------------------------- text helpers
@@ -77,24 +127,45 @@ def chunks(text: str, limit: int = 180) -> list[str]:
 
 
 # ---------------------------------------------------------------- providers
-async def _edge_mp3(text: str, voice_key: str) -> bytes:
+async def _edge_mp3(text: str, voice_key: str,
+                    rate: int = 0, pitch: int = 0) -> bytes:
     import edge_tts
     neural = VOICES.get(voice_key, VOICES["aria"])
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-    name = tmp.name
-    tmp.close()
-    try:
-        await asyncio.wait_for(
-            edge_tts.Communicate(text, voice=neural).save(name), timeout=25)
-        if os.path.getsize(name) < 500:
-            raise RuntimeError("edge returned empty audio")
-        with open(name, "rb") as fh:
-            return fh.read()
-    finally:
+    last_error: Exception | None = None
+    for attempt in range(2):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        name = tmp.name
+        tmp.close()
         try:
-            os.remove(name)
-        except OSError:
-            pass
+            await asyncio.wait_for(
+                edge_tts.Communicate(
+                    text,
+                    voice=neural,
+                    rate=f"{int(rate):+d}%",
+                    pitch=f"{int(pitch):+d}Hz",
+                ).save(name),
+                timeout=25,
+            )
+            if os.path.getsize(name) < 500:
+                raise RuntimeError("edge returned empty audio")
+            with open(name, "rb") as fh:
+                return fh.read()
+        except Exception as exc:
+            last_error = exc
+            # Edge occasionally returns an empty stream when throttled. One
+            # short retry fixes it without hiding a genuinely retired voice.
+            if type(exc).__name__ == "NoAudioReceived" and attempt == 0:
+                await asyncio.sleep(0.5)
+                continue
+            raise
+        finally:
+            try:
+                os.remove(name)
+            except OSError:
+                pass
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("edge returned no audio")
 
 
 async def _google_mp3(text: str) -> bytes:
@@ -122,24 +193,62 @@ async def _google_mp3(text: str) -> bytes:
     return b"".join(parts)
 
 
-async def synthesize(text: str, voice: str = "aria") -> tuple[bytes, str]:
-    """Return (mp3_bytes, provider_label). Tries edge then Google."""
+async def synthesize(text: str, voice: str = "aria",
+                     rate: int = 0, pitch: int = 0) -> tuple[bytes, str]:
+    """Return (mp3_bytes, provider_label).
+
+    Edge is the real voice. Google is only a fallback for female voices, because
+    its single English voice is female. Substituting it for a male voice is what
+    made "davis" sound like a girl, so male voices fail loudly instead.
+    """
     global _edge_blocked_until
     spoken = clean_text(text) or "hello"
+    gender = meta(voice).get("gender", "female")
     errors: list[str] = []
+    edge_error: Exception | None = None
+
     if time.monotonic() >= _edge_blocked_until:
         try:
-            return await _edge_mp3(spoken, voice), f"edge/{voice}"
+            return (await _edge_mp3(spoken, voice, rate, pitch),
+                    f"edge/{voice}")
         except Exception as exc:
-            errors.append(f"edge {type(exc).__name__}")
-            _edge_blocked_until = time.monotonic() + 300
-            print(f"[voice] edge unavailable for 5 min: "
-                  f"{type(exc).__name__}: {str(exc)[:140]}", flush=True)
-    try:
-        return await _google_mp3(spoken), "google"
-    except Exception as exc:
-        errors.append(f"google {type(exc).__name__}")
-        raise RuntimeError(" · ".join(errors)) from exc
+            edge_error = exc
+            # Some voices reject one specific pitch/rate combination. Retry at
+            # neutral settings before declaring the voice dead.
+            if type(exc).__name__ == "NoAudioReceived" and (rate or pitch):
+                try:
+                    data = await _edge_mp3(spoken, voice)
+                    print(f"[voice] {voice}: rate/pitch rejected, used neutral "
+                          f"settings", flush=True)
+                    return data, f"edge/{voice} (neutral tone)"
+                except Exception as exc2:
+                    edge_error = exc2
+            errors.append(f"edge {type(edge_error).__name__}")
+            # A missing voice is voice-specific; don't poison edge for 5 min.
+            if type(edge_error).__name__ != "NoAudioReceived":
+                _edge_blocked_until = time.monotonic() + 300
+                print(f"[voice] edge unavailable for 5 min: "
+                      f"{type(edge_error).__name__}: {str(edge_error)[:140]}",
+                      flush=True)
+            else:
+                print(f"[voice] edge has no audio for voice {voice!r} "
+                      f"({VOICES.get(voice)})", flush=True)
+
+    if gender == "female":
+        try:
+            return await _google_mp3(spoken), "google (female fallback)"
+        except Exception as exc:
+            errors.append(f"google {type(exc).__name__}")
+
+    if edge_error is not None:
+        raise RuntimeError(
+            f"{' · '.join(errors)} — edge failed for {display_name(voice)} "
+            f"({VOICES.get(voice)})"
+        ) from edge_error
+    raise RuntimeError(
+        f"edge is cooling down and Google cannot imitate a male voice "
+        f"({display_name(voice)})"
+    )
 
 
 # ---------------------------------------------------------------- audio tools
@@ -254,7 +363,8 @@ async def ensure_voice(guild: discord.Guild,
 
 async def _play(guild: discord.Guild, pcm: bytes,
                 preferred: discord.VoiceChannel | None,
-                stored_id: int | None, label: str) -> str:
+                stored_id: int | None, label: str,
+                generation: int | None = None) -> str:
     """Play PCM in the guild's VC. Returns a status string."""
     global _last_result, _last_provider, _last_pcm_seconds
     try:
@@ -271,6 +381,10 @@ async def _play(guild: discord.Guild, pcm: bytes,
         if not vc.is_playing():
             break
         await asyncio.sleep(0.25)
+
+    if generation is not None and _generation.get(guild.id, 0) != generation:
+        _last_result = "stopped"
+        return "cancelled"
 
     path = _write_pcm(pcm)
     handle = open(path, "rb")
@@ -318,16 +432,25 @@ async def _play(guild: discord.Guild, pcm: bytes,
 async def speak(guild: discord.Guild, text: str, *,
                 voice: str = "aria",
                 preferred: discord.VoiceChannel | None = None,
-                stored_id: int | None = None) -> str:
+                stored_id: int | None = None,
+                rate: int = 0,
+                pitch: int = 0) -> str:
     """Speak ``text`` in the guild's voice channel."""
-    global _last_result
+    global _last_result, _last_voice
+    generation = _generation.get(guild.id, 0)
     lock = _locks.setdefault(guild.id, asyncio.Lock())
     async with lock:
+        if _generation.get(guild.id, 0) != generation:
+            _last_result = "stopped"
+            return "cancelled"
         try:
-            mp3, provider = await synthesize(text, voice)
+            mp3, provider = await synthesize(text, voice, rate, pitch)
         except Exception as exc:
             _last_result = f"TTS failed: {exc}"[:300]
             return f"TTS failed ({exc})"
+        if _generation.get(guild.id, 0) != generation:
+            _last_result = "stopped"
+            return "cancelled"
         try:
             pcm = await to_pcm(mp3)
         except Exception as exc:
@@ -336,7 +459,10 @@ async def speak(guild: discord.Guild, text: str, *,
         if len(pcm) < BYTES_PER_SECOND // 8:
             _last_result = "decoded audio was empty"
             return "audio came back empty — try again"
-        return await _play(guild, pcm, preferred, stored_id, provider)
+        result = await _play(guild, pcm, preferred, stored_id, provider, generation)
+        if result == "speaking":
+            _last_voice = voice
+        return result
 
 
 async def play_tone(guild: discord.Guild, *,
@@ -346,10 +472,26 @@ async def play_tone(guild: discord.Guild, *,
     return await _play(guild, tone_pcm(), preferred, stored_id, "tone")
 
 
+def stop(guild: discord.Guild) -> str:
+    """Stop the current clip and cancel anything waiting to speak."""
+    global _last_result
+    _generation[guild.id] = _generation.get(guild.id, 0) + 1
+    vc = guild.voice_client
+    was_playing = bool(vc and vc.is_playing())
+    if was_playing:
+        try:
+            vc.stop()
+        except Exception:
+            pass
+    _last_result = "stopped" if was_playing else "stop requested"
+    return "stopped" if was_playing else "idle"
+
+
 def status(guild: discord.Guild) -> dict:
     """Snapshot for `.voicediag`."""
     vc = guild.voice_client
-    state = guild.me.voice if guild.me else None
+    member = getattr(guild, "me", None)
+    state = member.voice if member else None
     conn = getattr(vc, "_connection", None) if vc else None
     try:
         import importlib.metadata as md
@@ -382,6 +524,7 @@ def status(guild: discord.Guild) -> dict:
         "ffmpeg": ffmpeg_path(),
         "last_result": _last_result,
         "last_provider": _last_provider,
+        "last_voice": _last_voice,
         "last_seconds": _last_pcm_seconds,
         "edge_blocked": time.monotonic() < _edge_blocked_until,
     }

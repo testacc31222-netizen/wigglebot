@@ -283,7 +283,11 @@ DEFAULT_GUILD_CONFIG = {
     "autoreact": True,
     "chat_enabled": True,
     "qotd_channel_id": None,
-    "voice_auto": False,        # speak AI replies aloud when sitting in VC    "verify_channel_id": None,
+    "voice_auto": False,        # speak AI replies aloud when sitting in VC
+    "tts_voice": "aria",        # Edge TTS voice key (see voice_tts.VOICE_META)
+    "tts_rate": 0,              # TTS speed percent, -50..100
+    "tts_pitch": 0,             # TTS pitch Hz, -50..50
+    "verify_channel_id": None,
     "verified_role_id": None,
     "verify_enabled": False,
     "abuse_role_id": None,      # role pinged by .abuse (steal-a-brainrot admin abuse)
@@ -4086,26 +4090,175 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
         text,
         voice=cfg.get("tts_voice", "aria"),
         stored_id=cfg.get("mod_vc_channel_id"),
+        rate=int(cfg.get("tts_rate", 0)),
+        pitch=int(cfg.get("tts_pitch", 0)),
     )
+
+
+def _voice_tag(name: str) -> str:
+    m = voice_tts.meta(name)
+    icon = "♀" if m.get("gender") == "female" else "♂"
+    return f"`{name}`{icon}"
 
 
 @bot.command(name="voice")
 @trusted_only()
-async def cmd_voice(ctx: commands.Context, name: str = "") -> None:
-    """Pick the AI voice. Usage: .voice [aria|jenny|guy|davis|jane|sara|tony|nancy] (staff/whitelist only)."""
-    name = name.lower().strip()
-    if not name:
-        cur = get_config(ctx.guild.id).get("tts_voice", "aria")
-        await ctx.send(embed=ui.info(f"Current voice: **{cur}**\n"
-                                     f"Available: {', '.join(f'`{v}`' for v in sorted(VOICES))}",
-                                     "TTS voice"))
+async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
+    """Pick or preview a TTS voice. Usage: .voice | .voice <name> | .voice test <name>."""
+    parts = args.lower().split()
+    cfg = get_config(ctx.guild.id)
+    cur = cfg.get("tts_voice", "aria")
+
+    if not parts or parts[0] in ("list", "voices"):
+        m = voice_tts.meta(cur)
+        alias = m.get("alias")
+        current = (f"**Current:** `{cur}` → `{m['neural']}` "
+                   f"({m['gender']}, {m['accent']})")
+        if alias:
+            current += f"\n*`{cur}` is a legacy name; it now uses `{alias}`.*"
+        status = voice_tts.status(ctx.guild)
+        provider = status["last_provider"] or "not used yet"
+        desc = (f"{current}\n"
+                f"**Last provider:** `{provider}`\n"
+                f"**Speed:** `{int(cfg.get('tts_rate', 0)):+d}%` · "
+                f"**Pitch:** `{int(cfg.get('tts_pitch', 0)):+d}Hz`\n\n"
+                f"**Set:** `{PREFIX}voice <name>`\n"
+                f"**Preview only:** `{PREFIX}voice test <name>`\n"
+                f"**Tune:** `{PREFIX}voicespeed <±%>` · `{PREFIX}voicepitch <±Hz>`")
+        em = ui.embed("🎙️ TTS voice", desc, "info")
+        female = [n for n, mm in voice_tts.VOICE_META.items()
+                  if mm.get("gender") == "female" and n not in voice_tts.LEGACY]
+        male = [n for n, mm in voice_tts.VOICE_META.items()
+                if mm.get("gender") == "male" and n not in voice_tts.LEGACY]
+        em.add_field(name="Female voices",
+                     value=" ".join(_voice_tag(n) for n in sorted(female)),
+                     inline=False)
+        em.add_field(name="Male voices",
+                     value=" ".join(_voice_tag(n) for n in sorted(male)),
+                     inline=False)
+        await ctx.send(embed=em)
         return
-    if name not in VOICES:
-        await ctx.send(embed=ui.err(f"Unknown voice `{name}`. Available: "
-                                    f"{', '.join(f'`{v}`' for v in sorted(VOICES))}"))
+
+    preview = parts[0] in ("test", "preview")
+    if preview:
+        if len(parts) < 2:
+            name = cur
+        else:
+            name = parts[1]
+    else:
+        name = parts[0]
+
+    if name not in voice_tts.VOICES:
+        await ctx.send(embed=ui.err(
+            f"Unknown voice `{name}`. Run `{PREFIX}voice` to see the list.",
+            "TTS voice"))
         return
+
+    m = voice_tts.meta(name)
+    spoken_name = m.get("alias", name).title()
+    sample = f"Hi, I'm {spoken_name}. This is how I sound."
+    author_ch = (ctx.author.voice.channel
+                 if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
+    status = await voice_tts.speak(
+        ctx.guild,
+        sample,
+        voice=name,
+        preferred=author_ch,
+        stored_id=cfg.get("mod_vc_channel_id"),
+        rate=int(cfg.get("tts_rate", 0)),
+        pitch=int(cfg.get("tts_pitch", 0)),
+    )
+
+    if preview:
+        if status == "speaking":
+            await ctx.send(embed=ui.ok(
+                f"Previewing **{voice_tts.display_name(name)}** "
+                f"(`{m['neural']}`, {m['gender']}, {m['accent']}). Nothing saved.",
+                "Voice preview"))
+        else:
+            await ctx.send(embed=ui.warn(f"Preview failed: {status}", "TTS voice"))
+        return
+
     update_config(ctx.guild.id, tts_voice=name)
-    await ctx.send(embed=ui.ok(f"TTS voice set to **{name}**.", "Voice updated"))
+    if author_ch is not None:
+        update_config(ctx.guild.id, mod_vc_channel_id=author_ch.id)
+    if status == "speaking":
+        note = "Speaking the preview now."
+    elif status.startswith("not in voice"):
+        note = f"Join a voice channel to hear it, or run `{PREFIX}voice test {name}`."
+    else:
+        note = (f"⚠️ Preview failed: {status}\n"
+                f"The voice is saved; try `{PREFIX}voice test {name}` in a VC.")
+    await ctx.send(embed=ui.ok(
+        f"Voice set to **{voice_tts.display_name(name)}** "
+        f"(`{m['neural']}`, {m['gender']}, {m['accent']}).\n{note}",
+        "Voice updated"))
+
+
+@bot.command(name="voicespeed")
+@trusted_only()
+async def cmd_voicespeed(ctx: commands.Context, value: str = "") -> None:
+    """TTS speed. Usage: .voicespeed <-50..100> (staff/whitelist only)."""
+    cur = int(get_config(ctx.guild.id).get("tts_rate", 0))
+    if not value:
+        await ctx.send(embed=ui.info(
+            f"TTS speed is **{cur:+d}%**.\n"
+            f"Set it with `{PREFIX}voicespeed <value>` (range -50 to 100).\n"
+            f"Presets: `slow`, `normal`, `fast`.",
+            "TTS speed"))
+        return
+    presets = {"slow": -20, "normal": 0, "default": 0, "fast": 25}
+    if value.strip().lower() in presets:
+        speed = presets[value.strip().lower()]
+    else:
+        try:
+            speed = int(value.strip().rstrip("%"))
+        except ValueError:
+            await ctx.send(embed=ui.err("Speed must be a whole number or "
+                                        "`slow`/`normal`/`fast`."))
+            return
+    speed = max(-50, min(100, speed))
+    update_config(ctx.guild.id, tts_rate=speed)
+    await ctx.send(embed=ui.ok(f"TTS speed set to **{speed:+d}%**.", "TTS speed"))
+
+
+@bot.command(name="voicepitch")
+@trusted_only()
+async def cmd_voicepitch(ctx: commands.Context, value: str = "") -> None:
+    """TTS pitch. Usage: .voicepitch <-50..50> (staff/whitelist only)."""
+    cur = int(get_config(ctx.guild.id).get("tts_pitch", 0))
+    if not value:
+        await ctx.send(embed=ui.info(
+            f"TTS pitch is **{cur:+d}Hz**.\n"
+            f"Set it with `{PREFIX}voicepitch <value>` (range -50 to 50).\n"
+            f"Presets: `low`, `normal`, `high`.",
+            "TTS pitch"))
+        return
+    presets = {"low": -10, "normal": 0, "default": 0, "high": 10}
+    if value.strip().lower() in presets:
+        pitch = presets[value.strip().lower()]
+    else:
+        try:
+            pitch = int(value.strip().rstrip("hz").rstrip("Hz"))
+        except ValueError:
+            await ctx.send(embed=ui.err("Pitch must be a whole number or "
+                                        "`low`/`normal`/`high`."))
+            return
+    pitch = max(-50, min(50, pitch))
+    update_config(ctx.guild.id, tts_pitch=pitch)
+    await ctx.send(embed=ui.ok(f"TTS pitch set to **{pitch:+d}Hz**.", "TTS pitch"))
+
+
+@bot.command(name="voicestop")
+@trusted_only()
+async def cmd_voicestop(ctx: commands.Context) -> None:
+    """Stop speaking and clear waiting speech. Usage: .voicestop (staff/whitelist only)."""
+    result = voice_tts.stop(ctx.guild)
+    if result == "stopped":
+        await ctx.send(embed=ui.ok("Stopped speaking and cancelled queued clips.",
+                                   "🔇 Voice"))
+    else:
+        await ctx.send(embed=ui.info("Nothing was playing.", "🔇 Voice"))
 
 
 @bot.command(name="ask")
@@ -4152,7 +4305,7 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
                        ctx.guild.id if ctx.guild else None)
     await ctx.send(answer[:1900])
     status = await speak_text(ctx.guild, answer[:300])
-    if status != "speaking":
+    if status not in ("speaking", "cancelled"):
         await ctx.send(embed=ui.warn(f"Voice playback: {status}", "🔇 Voice"))
 
 
@@ -4164,6 +4317,10 @@ async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
         await ctx.send(embed=ui.info(f"`{PREFIX}speak <text>` — join a voice channel first.",
                                      "Speak"))
         return
+    if text.strip().lower() in ("stop", "shut up", "shutup", "quiet"):
+        voice_tts.stop(ctx.guild)
+        await ctx.send(embed=ui.ok("Stopped speaking.", "🔇 Voice"))
+        return
     author_ch = (ctx.author.voice.channel
                  if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
     cfg = get_config(ctx.guild.id)
@@ -4173,12 +4330,16 @@ async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
             voice=cfg.get("tts_voice", "aria"),
             preferred=author_ch,
             stored_id=cfg.get("mod_vc_channel_id"),
+            rate=int(cfg.get("tts_rate", 0)),
+            pitch=int(cfg.get("tts_pitch", 0)),
         )
     except Exception as exc:
         status = f"voice failed: {type(exc).__name__}: {exc}"[:200]
     if status == "speaking":
         if author_ch is not None:
             update_config(ctx.guild.id, mod_vc_channel_id=author_ch.id)
+        return
+    if status == "cancelled":
         return
     await ctx.send(embed=ui.warn(f"Voice playback: {status}", "🔇 Voice"))
 
@@ -4237,8 +4398,14 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
                      f"davey `{info['davey']}`\n"
                      f"*(audio is unencrypted, so Discord discards it)*")
 
+    cur_voice = cfg.get("tts_voice", "aria")
+    vm = voice_tts.meta(cur_voice)
+    voice_line = (f"`{voice_tts.display_name(cur_voice)}` → "
+                  f"`{vm['neural']}` ({vm['gender']}, {vm['accent']})")
     lines = [
         f"**In voice:** {('yes — ' + channel.mention) if channel else 'no'}",
+        f"**Voice:** {voice_line}",
+        f"**Last provider:** `{info['last_provider'] or 'not used yet'}`",
         f"**Connected / playing:** "
         f"{'yes' if info['connected'] else 'no'} / {'yes' if info['playing'] else 'no'}",
         f"**Server mute / deafen:** "
@@ -4258,7 +4425,8 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
     elif channel:
         lines.append(f"**Members in my VC:** {len(channel.members)}")
     if info["edge_blocked"]:
-        lines.append("ℹ️ Edge voice is cooling down; fallback voice is in use.")
+        lines.append("ℹ️ Edge is cooling down. Female voices may use Google; "
+                     "male voices will fail rather than switch to a female voice.")
 
     em = ui.embed("🎙️ Voice diagnostics", "\n".join(lines), "info",
                   footer=f"{ui.FOOTER} • voice")
