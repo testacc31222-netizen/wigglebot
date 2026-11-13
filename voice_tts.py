@@ -283,7 +283,8 @@ def ffmpeg_path() -> str | None:
     return shutil.which("ffmpeg")
 
 
-async def to_pcm(mp3: bytes, audio_filter: str | None = None) -> bytes:
+async def to_pcm(mp3: bytes, audio_filter: str | None = None,
+                 gain: int = 100) -> bytes:
     """Decode MP3 bytes into raw 48 kHz stereo s16le PCM."""
     exe = ffmpeg_path()
     if not exe:
@@ -292,9 +293,12 @@ async def to_pcm(mp3: bytes, audio_filter: str | None = None) -> bytes:
     tmp.write(mp3)
     tmp.close()
     proc = None
+    filters = [audio_filter] if audio_filter else []
+    if gain != 100:
+        filters.append(f"volume={max(0, min(100, gain)) / 100:.2f}")
     args = [exe, "-v", "error", "-i", tmp.name]
-    if audio_filter:
-        args += ["-af", audio_filter]
+    if filters:
+        args += ["-af", ",".join(filters)]
     args += ["-f", "s16le", "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "pipe:1"]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -455,7 +459,8 @@ async def speak(guild: discord.Guild, text: str, *,
                 preferred: discord.VoiceChannel | None = None,
                 stored_id: int | None = None,
                 rate: int = 0,
-                pitch: int = 0) -> str:
+                pitch: int = 0,
+                gain: int = 100) -> str:
     """Speak ``text`` in the guild's voice channel."""
     global _last_result, _last_voice
     generation = _generation.get(guild.id, 0)
@@ -473,7 +478,7 @@ async def speak(guild: discord.Guild, text: str, *,
             _last_result = "stopped"
             return "cancelled"
         try:
-            pcm = await to_pcm(mp3, VOICE_FILTERS.get(voice))
+            pcm = await to_pcm(mp3, VOICE_FILTERS.get(voice), gain)
         except Exception as exc:
             _last_result = f"decode failed: {exc}"[:300]
             return f"audio decode failed ({exc})"

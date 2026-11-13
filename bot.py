@@ -287,6 +287,7 @@ DEFAULT_GUILD_CONFIG = {
     "tts_voice": "aria",        # Edge TTS voice key (see voice_tts.VOICE_META)
     "tts_rate": 0,              # TTS speed percent, -50..100
     "tts_pitch": 0,             # TTS pitch Hz, -50..50
+    "tts_gain": 100,            # TTS volume percent, 0..100
     "verify_channel_id": None,
     "verified_role_id": None,
     "verify_enabled": False,
@@ -4092,6 +4093,7 @@ async def speak_text(guild: discord.Guild, text: str) -> str:
         stored_id=cfg.get("mod_vc_channel_id"),
         rate=int(cfg.get("tts_rate", 0)),
         pitch=int(cfg.get("tts_pitch", 0)),
+        gain=int(cfg.get("tts_gain", 100)),
     )
 
 
@@ -4123,7 +4125,8 @@ async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
         base_pitch = int(cfg.get("tts_pitch", 0))
         eff_rate, eff_pitch = voice_tts.effective_tone(cur, base_rate, base_pitch)
         tone_line = (f"**Speed:** `{base_rate:+d}%` · "
-                     f"**Pitch:** `{base_pitch:+d}Hz`")
+                     f"**Pitch:** `{base_pitch:+d}Hz` · "
+                     f"**Volume:** `{int(cfg.get('tts_gain', 100))}%`")
         if (eff_rate, eff_pitch) != (base_rate, base_pitch):
             tone_line += (f" → `{eff_rate:+d}%` / `{eff_pitch:+d}Hz` "
                           f"(soft preset)")
@@ -4133,7 +4136,8 @@ async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
                 f"**Soft ASMR:** `{PREFIX}voice mommy` — Ava, slower, lower, close-mic ♡\n\n"
                 f"**Set:** `{PREFIX}voice <name>`\n"
                 f"**Preview only:** `{PREFIX}voice test <name>`\n"
-                f"**Tune:** `{PREFIX}voicespeed <±%>` · `{PREFIX}voicepitch <±Hz>`")
+                f"**Tune:** `{PREFIX}voicespeed <±%>` · `{PREFIX}voicepitch <±Hz>` · "
+                f"`{PREFIX}voicevolume <0-100>`")
         em = ui.embed("🎙️ TTS voice", desc, "info")
         female = [n for n, mm in voice_tts.VOICE_META.items()
                   if mm.get("gender") == "female" and n not in voice_tts.LEGACY]
@@ -4180,6 +4184,7 @@ async def cmd_voice(ctx: commands.Context, *, args: str = "") -> None:
         stored_id=cfg.get("mod_vc_channel_id"),
         rate=int(cfg.get("tts_rate", 0)),
         pitch=int(cfg.get("tts_pitch", 0)),
+        gain=int(cfg.get("tts_gain", 100)),
     )
 
     if preview:
@@ -4260,6 +4265,33 @@ async def cmd_voicepitch(ctx: commands.Context, value: str = "") -> None:
     pitch = max(-50, min(50, pitch))
     update_config(ctx.guild.id, tts_pitch=pitch)
     await ctx.send(embed=ui.ok(f"TTS pitch set to **{pitch:+d}Hz**.", "TTS pitch"))
+
+
+@bot.command(name="voicevolume")
+@trusted_only()
+async def cmd_voicevolume(ctx: commands.Context, value: str = "") -> None:
+    """TTS volume. Usage: .voicevolume <0..100> (staff/whitelist only)."""
+    cur = int(get_config(ctx.guild.id).get("tts_gain", 100))
+    if not value:
+        await ctx.send(embed=ui.info(
+            f"TTS volume is **{cur}%**.\n"
+            f"Set it with `{PREFIX}voicevolume <value>` (0 to 100).\n"
+            f"Presets: `soft` (70), `whisper` (45), `normal` (100).",
+            "TTS volume"))
+        return
+    presets = {"soft": 70, "quiet": 60, "whisper": 45, "normal": 100, "default": 100}
+    if value.strip().lower() in presets:
+        gain = presets[value.strip().lower()]
+    else:
+        try:
+            gain = int(value.strip().rstrip("%"))
+        except ValueError:
+            await ctx.send(embed=ui.err("Volume must be 0-100 or "
+                                        "`soft`/`whisper`/`normal`."))
+            return
+    gain = max(0, min(100, gain))
+    update_config(ctx.guild.id, tts_gain=gain)
+    await ctx.send(embed=ui.ok(f"TTS volume set to **{gain}%**.", "TTS volume"))
 
 
 @bot.command(name="voicestop")
@@ -4345,6 +4377,7 @@ async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
             stored_id=cfg.get("mod_vc_channel_id"),
             rate=int(cfg.get("tts_rate", 0)),
             pitch=int(cfg.get("tts_pitch", 0)),
+            gain=int(cfg.get("tts_gain", 100)),
         )
     except Exception as exc:
         status = f"voice failed: {type(exc).__name__}: {exc}"[:200]
@@ -4420,7 +4453,8 @@ async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
     lines = [
         f"**In voice:** {('yes — ' + channel.mention) if channel else 'no'}",
         f"**Voice:** {voice_line}",
-        f"**Tone:** `{eff_rate:+d}%` / `{eff_pitch:+d}Hz`",
+        f"**Tone:** `{eff_rate:+d}%` / `{eff_pitch:+d}Hz` · "
+        f"**Volume:** `{int(cfg.get('tts_gain', 100))}%`",
         f"**Last provider:** `{info['last_provider'] or 'not used yet'}`",
         f"**Connected / playing:** "
         f"{'yes' if info['connected'] else 'no'} / {'yes' if info['playing'] else 'no'}",
