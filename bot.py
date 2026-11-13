@@ -21,6 +21,7 @@ import stats
 import ui
 import staff_tools
 import holiday
+import voice_tts
 
 load_dotenv()
 
@@ -752,7 +753,8 @@ async def on_ready() -> None:
                         await ch.connect()
                     print(f"[vc] rejoined {ch.name} in {guild.name}")
                     await asyncio.sleep(2)
-                    print(f"[vc] crypto: {_voice_crypto_note(guild.voice_client)}", flush=True)
+                    print(f"[vc] crypto: {voice_tts.crypto_note(guild.voice_client)}",
+                          flush=True)
                 except (discord.Forbidden, discord.HTTPException) as exc:
                     print(f"[vc] rejoin failed: {exc}")
 
@@ -4072,236 +4074,19 @@ async def cmd_vcjoin(ctx: commands.Context, channel: str = "") -> None:
         await ctx.send(embed=ui.err(f"I can't join (need Connect permission): {exc}"))
 
 
-last_voice_note = "no attempt yet"
-
-
-def _tts_chunks(text: str, limit: int = 180) -> list[str]:
-    """Split text into chunks the Google TTS endpoint accepts (~200 chars)."""
-    words = text.split()
-    chunks: list[str] = []
-    current = ""
-    for word in words:
-        if len(current) + len(word) + 1 > limit:
-            if current:
-                chunks.append(current)
-            current = word[:limit]
-        else:
-            current = f"{current} {word}".strip()
-    if current:
-        chunks.append(current)
-    return chunks or [text[:limit]]
-
-
-async def _google_tts_bytes(text: str) -> bytes:
-    """Free fallback voice: Google Translate TTS. Returns raw MP3 bytes."""
-    headers = {
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/124.0 Safari/537.36"),
-        "Referer": "https://translate.google.com/",
-    }
-    timeout = aiohttp.ClientTimeout(total=25)
-    parts: list[bytes] = []
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        for chunk in _tts_chunks(text):
-            async with session.get(
-                "https://translate.google.com/translate_tts",
-                params={"ie": "UTF-8", "client": "tw-ob", "tl": "en",
-                        "ttsspeed": "1", "q": chunk},
-            ) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"google tts HTTP {resp.status}")
-                data = await resp.read()
-                if len(data) < 500 or data[:1] == b"<":
-                    raise RuntimeError("google tts returned no audio")
-                parts.append(data)
-    return b"".join(parts)
-
-
-def _ffmpeg_path() -> str | None:
-    # Prefer imageio's bundled static ffmpeg; some hosts ship a stub /usr/bin/ffmpeg
-    # that exits silently, which looks like "the bot is in VC but says nothing".
-    try:
-        import imageio_ffmpeg
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-        if exe and os.path.exists(exe):
-            return exe
-    except Exception:
-        pass
-    import shutil as _sh
-    return _sh.which("ffmpeg")
-
-
-def _write_tone(path: str, seconds: float = 2.0, freq: int = 440) -> None:
-    """Write a simple stereo sine-wave WAV for an audible voice test."""
-    import math
-    import struct
-    import wave
-    rate = 48000
-    with wave.open(path, "wb") as wav:
-        wav.setnchannels(2)
-        wav.setsampwidth(2)
-        wav.setframerate(rate)
-        frames = bytearray()
-        for i in range(int(rate * seconds)):
-            sample = int(32767 * 0.25 * math.sin(2 * math.pi * freq * i / rate))
-            frames += struct.pack("<hh", sample, sample)
-        wav.writeframes(bytes(frames))
-
-
-def _voice_crypto_note(vc: discord.VoiceClient | None) -> str:
-    conn = getattr(vc, "_connection", None) if vc else None
-    if conn is None:
-        return "no voice connection"
-    proto = getattr(conn, "dave_protocol_version", 0)
-    session = getattr(conn, "dave_session", None)
-    ready = bool(getattr(conn, "can_encrypt", False))
-    mode = getattr(conn, "mode", "?")
-    latency = getattr(vc, "latency", 0.0) or 0.0
-    return (f"dave_proto={proto} session={'yes' if session else 'no'} "
-            f"can_encrypt={ready} mode={mode} latency={latency:.2f}s")
-
-
-async def _ensure_voice(guild: discord.Guild) -> discord.VoiceClient | None:
-    """Return a live voice client, reconnecting if the link dropped."""
-    vc = guild.voice_client
-    if vc and vc.is_connected():
-        return vc
-    cid = get_config(guild.id).get("mod_vc_channel_id")
-    channel = guild.get_channel(cid) if cid else None
-    if not isinstance(channel, discord.VoiceChannel):
-        return None
-    try:
-        if vc:
-            await vc.disconnect(force=True)
-        return await channel.connect()
-    except Exception as exc:
-        print(f"[voice] reconnect failed: {type(exc).__name__}: {exc}", flush=True)
-        return guild.voice_client
+# Voice/TTS lives in voice_tts.py: text -> MP3 -> 48 kHz PCM -> Discord.
+VOICES = voice_tts.VOICES
 
 
 async def speak_text(guild: discord.Guild, text: str) -> str:
-    """Play TTS in the bot's current VC. Returns status for logs/errors."""
-    global last_voice_note
-    import re as _re
-    import tempfile as _tf
-    vc = await _ensure_voice(guild)
-    if not vc or not vc.channel:
-        last_voice_note = "not connected to voice"
-        return "not in voice — `.vcjoin` first"
-    print(f"[voice] state before play: {_voice_crypto_note(vc)}", flush=True)
-    ffmpeg_exe = _ffmpeg_path()
-    if not ffmpeg_exe:
-        last_voice_note = "ffmpeg missing"
-        return "no ffmpeg on this host — redeploy so requirements install"
-    clean = _re.sub(r"[*_~>|`]", "", text)[:300] or "hello"
-    voice = VOICES.get(get_config(guild.id).get("tts_voice", "aria"), "en-US-AriaNeural")
-    mp3 = None
-    provider = ""
-    errors: list[str] = []
-
-    # 1) Edge neural voice (best quality — may be blocked at the endpoint).
-    tmp_name = None
-    try:
-        import edge_tts
-        tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
-        tmp_name = tmp.name
-        tmp.close()
-        await asyncio.wait_for(
-            edge_tts.Communicate(clean, voice=voice).save(tmp_name), timeout=20)
-        if os.path.getsize(tmp_name) < 500:
-            raise ValueError("empty audio back from TTS")
-        mp3 = tmp_name
-        provider = f"edge/{voice}"
-    except Exception as exc:
-        errors.append(f"edge {type(exc).__name__}")
-        print(f"[voice] edge TTS failed: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
-        if tmp_name and os.path.exists(tmp_name):
-            try:
-                os.remove(tmp_name)
-            except OSError:
-                pass
-
-    # 2) Google Translate TTS fallback (no key, works from most hosts).
-    if not mp3:
-        google_tmp = None
-        try:
-            data = await _google_tts_bytes(clean)
-            tmp = _tf.NamedTemporaryFile(delete=False, suffix=".mp3")
-            google_tmp = tmp.name
-            tmp.close()
-            with open(google_tmp, "wb") as fh:
-                fh.write(data)
-            if os.path.getsize(google_tmp) < 500:
-                raise ValueError("empty audio back from fallback")
-            mp3 = google_tmp
-            provider = "google"
-        except Exception as exc:
-            errors.append(f"google {type(exc).__name__}")
-            print(f"[voice] fallback TTS failed: {type(exc).__name__}: {str(exc)[:160]}",
-                  flush=True)
-            if google_tmp and os.path.exists(google_tmp):
-                try:
-                    os.remove(google_tmp)
-                except OSError:
-                    pass
-
-    if not mp3:
-        last_voice_note = " · ".join(errors)[:300] or "unknown error"
-        return f"TTS gave silence ({last_voice_note}). Run `.voicediag test`."
-
-    try:
-        while vc.is_playing():
-            await asyncio.sleep(0.5)
-        try:
-            source = discord.FFmpegPCMAudio(mp3, executable=ffmpeg_exe)
-        except Exception as exc:
-            try:
-                os.remove(mp3)
-            except OSError:
-                pass
-            last_voice_note = f"ffmpeg start {type(exc).__name__}: {exc}"[:300]
-            return f"ffmpeg couldn't start ({type(exc).__name__})"
-        def _after_play(err: Exception | None) -> None:
-            if err is not None:
-                print(f"[voice] playback error: {type(err).__name__}: {err}", flush=True)
-            if os.path.exists(mp3):
-                try:
-                    os.remove(mp3)
-                except OSError:
-                    pass
-
-        try:
-            vc.play(source, after=_after_play)
-        except discord.ClientException:
-            try:
-                os.remove(mp3)
-            except OSError:
-                pass
-            last_voice_note = "voice client busy / link died"
-            return "already playing — wait a sec, or the voice link died (rejoin with `.vcjoin`)"
-        last_voice_note = f"playing via {provider}"
-        print(f"[voice] speaking via {provider} ({len(text)} chars)", flush=True)
-        return "speaking"
-    except Exception as exc:
-        last_voice_note = f"playback {type(exc).__name__}: {exc}"[:300]
-        try:
-            os.remove(mp3)
-        except OSError:
-            pass
-        return f"voice failed: {type(exc).__name__}"
-
-
-VOICES = {
-    "aria": "en-US-AriaNeural",
-    "jenny": "en-US-JennyNeural",
-    "guy": "en-US-GuyNeural",
-    "davis": "en-US-DavisNeural",
-    "jane": "en-US-JaneNeural",
-    "sara": "en-US-SaraNeural",
-    "tony": "en-US-TonyNeural",
-    "nancy": "en-US-NancyNeural",
-}
+    """Speak into the guild's current VC using the configured voice."""
+    cfg = get_config(guild.id)
+    return await voice_tts.speak(
+        guild,
+        text,
+        voice=cfg.get("tts_voice", "aria"),
+        stored_id=cfg.get("mod_vc_channel_id"),
+    )
 
 
 @bot.command(name="voice")
@@ -4376,29 +4161,26 @@ async def cmd_ask(ctx: commands.Context, *, question: str = "") -> None:
 async def cmd_speak(ctx: commands.Context, *, text: str = "") -> None:
     """Bot says it out loud in VC. Usage: .speak <text> (staff/whitelist only)."""
     if not text:
-        await ctx.send(embed=ui.info(f"`{PREFIX}speak <text>` — join a voice channel with "
-                                     f"`{PREFIX}vcjoin` first.", "Speak"))
+        await ctx.send(embed=ui.info(f"`{PREFIX}speak <text>` — join a voice channel first.",
+                                     "Speak"))
         return
-    # Pull the bot into the invoker's channel so they actually hear it.
     author_ch = (ctx.author.voice.channel
                  if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
-    if author_ch is not None:
-        try:
-            vc = ctx.guild.voice_client
-            if vc and vc.channel and vc.channel.id != author_ch.id:
-                await vc.move_to(author_ch)
-            elif not vc:
-                await author_ch.connect()
-            update_config(ctx.guild.id, mod_vc_channel_id=author_ch.id)
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            await ctx.send(embed=ui.warn(f"I couldn't join {author_ch.mention}: {exc}", "Voice"))
-            return
+    cfg = get_config(ctx.guild.id)
     try:
-        status = await speak_text(ctx.guild, text)
+        status = await voice_tts.speak(
+            ctx.guild, text,
+            voice=cfg.get("tts_voice", "aria"),
+            preferred=author_ch,
+            stored_id=cfg.get("mod_vc_channel_id"),
+        )
     except Exception as exc:
         status = f"voice failed: {type(exc).__name__}: {exc}"[:200]
-    if status != "speaking":
-        await ctx.send(embed=ui.warn(f"Voice playback: {status}", "🔇 Voice"))
+    if status == "speaking":
+        if author_ch is not None:
+            update_config(ctx.guild.id, mod_vc_channel_id=author_ch.id)
+        return
+    await ctx.send(embed=ui.warn(f"Voice playback: {status}", "🔇 Voice"))
 
 
 @bot.command(name="voiceauto")
@@ -4436,107 +4218,76 @@ async def cmd_vcleave(ctx: commands.Context) -> None:
 @trusted_only()
 async def cmd_voicediag(ctx: commands.Context, run: str = "") -> None:
     """Voice/TTS diagnosis. Usage: .voicediag | .voicediag test | .voicediag tone (staff only)."""
-    global last_voice_note
     action = run.strip().lower()
-    vc = ctx.guild.voice_client if ctx.guild else None
     cfg = get_config(ctx.guild.id)
-    ffmpeg_exe = _ffmpeg_path()
-    state = ctx.guild.me.voice if ctx.guild else None
-    try:
-        import edge_tts
-        edge_ver = getattr(edge_tts, "__version__", "installed")
-    except ImportError:
-        edge_ver = "MISSING"
-    try:
-        import importlib.metadata as _md
-        davey_ver = _md.version("davey")
-    except Exception:
-        davey_ver = "MISSING"
-    dave_active = bool(vc and getattr(vc, "dave_session", None))
-    conn = getattr(vc, "_connection", None) if vc else None
-    dave_proto = getattr(conn, "dave_protocol_version", 0) if conn else 0
-    dave_ready = bool(getattr(conn, "can_encrypt", False)) if conn else False
-    if dave_proto == 0:
-        dave_line = f"not in use (protocol v0 — normal) · davey `{davey_ver}`"
-    elif dave_active and dave_ready:
-        dave_line = f"active (protocol v{dave_proto}) · davey `{davey_ver}`"
-    else:
-        dave_line = (f"⚠️ protocol v{dave_proto} but session "
-                     f"{'ready' if dave_active else 'NOT established'} · davey `{davey_ver}`")
+    info = voice_tts.status(ctx.guild)
+    vc = info["vc"]
+    channel = info["channel"]
     author_ch = (ctx.author.voice.channel
                  if getattr(ctx.author, "voice", None) and ctx.author.voice.channel else None)
+
+    if info["dave_proto"] == 0:
+        dave_line = f"not in use (protocol v0 — normal) · davey `{info['davey']}`"
+    elif info["dave_session"] and info["can_encrypt"]:
+        dave_line = f"active (protocol v{info['dave_proto']}) · davey `{info['davey']}`"
+    else:
+        dave_line = (f"⚠️ protocol v{info['dave_proto']} · session "
+                     f"{'ready' if info['dave_session'] else 'NOT established'} · "
+                     f"davey `{info['davey']}`")
+
     lines = [
-        f"**In voice:** {('yes — ' + vc.channel.mention) if vc and vc.channel else 'no'}",
-        f"**Connected:** {'yes' if vc and vc.is_connected() else 'no'}",
-        f"**Playing:** {'yes' if vc and vc.is_playing() else 'no'}",
+        f"**In voice:** {('yes — ' + channel.mention) if channel else 'no'}",
+        f"**Connected / playing:** "
+        f"{'yes' if info['connected'] else 'no'} / {'yes' if info['playing'] else 'no'}",
         f"**Server mute / deafen:** "
-        f"{'MUTED ⚠️' if state and state.mute else 'ok'} / "
-        f"{'DEAFENED ⚠️' if state and state.deaf else 'ok'}",
+        f"{'MUTED ⚠️' if info['server_mute'] else 'ok'} / "
+        f"{'DEAFENED ⚠️' if info['server_deaf'] else 'ok'}",
         f"**Self mute / deafen:** "
-        f"{'muted' if state and state.self_mute else 'ok'} / "
-        f"{'deafened' if state and state.self_deaf else 'ok'}",
+        f"{'muted' if info['self_mute'] else 'ok'} / "
+        f"{'deafened' if info['self_deaf'] else 'ok'}",
         f"**DAVE encryption:** {dave_line}",
-        f"**ffmpeg:** `{ffmpeg_exe or 'MISSING'}`",
-        f"**edge-tts:** `{edge_ver}`",
-        f"**Last attempt:** {last_voice_note}",
+        f"**ffmpeg:** `{info['ffmpeg'] or 'MISSING'}`",
+        f"**edge-tts:** `{info['edge']}`",
+        f"**Last attempt:** {info['last_result']}",
     ]
-    if author_ch and vc and vc.channel and author_ch.id != vc.channel.id:
-        lines.append(f"⚠️ **You're in {author_ch.mention}, I'm in {vc.channel.mention} — "
-                     f"move to my channel or use `{PREFIX}speak` to pull me over.**")
-    elif vc and vc.channel:
-        lines.append(f"**Members in my VC:** {len(vc.channel.members)}")
+    if author_ch and channel and author_ch.id != channel.id:
+        lines.append(f"⚠️ **You're in {author_ch.mention}, I'm in {channel.mention} — "
+                     f"`{PREFIX}speak` will move me to you.**")
+    elif channel:
+        lines.append(f"**Members in my VC:** {len(channel.members)}")
+    if info["edge_blocked"]:
+        lines.append("ℹ️ Edge voice is cooling down; fallback voice is in use.")
+
     em = ui.embed("🎙️ Voice diagnostics", "\n".join(lines), "info",
                   footer=f"{ui.FOOTER} • voice")
+
     if action in ("test", "check"):
-        results = []
-        voice = VOICES.get(cfg.get("tts_voice", "aria"), "en-US-AriaNeural")
-        t0 = time.perf_counter()
-        try:
-            import tempfile
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-            name = tmp.name
-            tmp.close()
-            import edge_tts
-            await asyncio.wait_for(
-                edge_tts.Communicate("voice test one two", voice=voice).save(name),
-                timeout=20)
-            size = os.path.getsize(name)
-            os.remove(name)
-            results.append(f"✅ edge `{voice}` — {size} bytes "
-                           f"({time.perf_counter() - t0:.1f}s)")
-        except Exception as exc:
-            results.append(f"❌ edge — `{type(exc).__name__}`")
-        t1 = time.perf_counter()
-        try:
-            data = await _google_tts_bytes("voice test one two")
-            results.append(f"✅ fallback google — {len(data)} bytes "
-                           f"({time.perf_counter() - t1:.1f}s)")
-        except Exception as exc:
-            results.append(f"❌ fallback google — `{type(exc).__name__}`")
-        em.add_field(name="Provider test", value="\n".join(results), inline=False)
+        voice_tts.reset_edge_backoff()
+        results = await voice_tts.probe(cfg.get("tts_voice", "aria"))
+        em.add_field(name="Provider test (generate + decode)",
+                     value="\n".join(results), inline=False)
+
     if action in ("tone", "beep", "play"):
-        if not vc or not vc.channel:
-            em.add_field(name="Tone test", value="I'm not in a voice channel — `.vcjoin` first.",
-                         inline=False)
+        status = await voice_tts.play_tone(
+            ctx.guild,
+            preferred=author_ch,
+            stored_id=cfg.get("mod_vc_channel_id"),
+        )
+        if status == "speaking":
+            if author_ch is not None:
+                update_config(ctx.guild.id, mod_vc_channel_id=author_ch.id)
+            now_vc = ctx.guild.voice_client
+            where = (now_vc.channel.mention if now_vc and now_vc.channel else "your VC")
+            em.add_field(
+                name="Tone test",
+                value=(f"Played a 1.5s beep in {where}.\n"
+                       "**Heard it?** Voice output works — TTS is fine too.\n"
+                       "**Heard nothing?** Check server mute above and your "
+                       "per-user volume (right-click me in the VC)."),
+                inline=False)
         else:
-            import tempfile
-            wav = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-            wav.close()
-            try:
-                _write_tone(wav.name)
-                source = discord.FFmpegPCMAudio(wav.name, executable=ffmpeg_exe)
-                vc.play(source, after=lambda e: os.remove(wav.name)
-                        if os.path.exists(wav.name) else None)
-                em.add_field(
-                    name="Tone test",
-                    value=(f"Played a 2-second beep in {vc.channel.mention}.\n"
-                           "**Heard it?** Voice output works — the issue is TTS text.\n"
-                           "**Heard nothing?** Check server mute above, or DAVE."),
-                    inline=False)
-            except Exception as exc:
-                em.add_field(name="Tone test",
-                             value=f"❌ `{type(exc).__name__}: {str(exc)[:150]}`",
-                             inline=False)
+            em.add_field(name="Tone test", value=f"❌ {status}", inline=False)
+
     await ctx.send(embed=em)
 
 
