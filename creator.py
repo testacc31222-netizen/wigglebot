@@ -1198,6 +1198,7 @@ HELP = """**Creator commands**
 `.creator reviewchannel #channel` — where unclear videos go
 `.creator approvedchannel #channel` — where approved videos are showcased
 `.creator setrole @role` — which role may submit
+`.creator config` — show the current setup
 `.creator setmin <seconds>` — shortest video that auto-approves (default 15)
 `.creator sync` — pull approved creator channels from the site
 `.creator submissions` — latest submissions
@@ -1297,6 +1298,37 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         g["settings"][key] = cid
         save()
         await ctx.reply(f"Set **{sub}** to <#{cid}>.", mention_author=False)
+        return
+
+    if sub in ("config", "settings", "setup"):
+        s = g["settings"]
+
+        def _ch(key):
+            cid = int(s.get(key) or 0)
+            return f"<#{cid}>" if cid else "❌ not set"
+
+        subch = ctx.guild.get_channel(int(s.get("submissions_channel") or 0))
+        kind = ""
+        if subch is not None:
+            kind = " (forum ✅)" if type(subch).__name__ == "ForumChannel" else " (text channel)"
+        role = ctx.guild.get_role(int(s.get("role_id") or 0))
+        lines = [
+            f"**Submissions:** {_ch('submissions_channel')}{kind}",
+            f"**Review:** {_ch('review_channel')}",
+            f"**Showcase:** {_ch('approved_channel')}",
+            f"**Creator role:** {role.mention if role else '❌ not set'}",
+            f"**Minimum length:** {s.get('min_seconds', 15)}s",
+            f"**Auto-approve:** {'on' if s.get('auto_approve', True) else 'off'}",
+        ]
+        missing = [n for n, k in (("submitchannel", "submissions_channel"),
+                                  ("reviewchannel", "review_channel"),
+                                  ("approvedchannel", "approved_channel"),
+                                  ("setrole", "role_id")) if not s.get(k)]
+        if missing:
+            lines.append("**Still needed:** " + " · ".join(f"`.creator {m}`" for m in missing))
+        em = bm.ui.embed("⚙️ Creator setup", "\n".join(lines), "info",
+                         footer="Wigglesworth • creator rewards")
+        await ctx.reply(embed=em, mention_author=False)
         return
 
     if sub == "setrole":
