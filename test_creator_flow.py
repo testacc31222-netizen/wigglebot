@@ -230,12 +230,28 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
                           *(f"{f.name}\n{f.value}" for f in prog.fields)))
         self.assertIn("Creator", text)
         self.assertIn("300", text)
-        self.assertIn("missions", text)
+        self.assertIn("This week's missions", text)
         shop = creator.shop_embed()
         self.assertIn("Creator shop", shop.title)
         self.assertIn("In-game cash bundle", shop.description)
+        self.assertIn("Double XP weekend", shop.description)
+        self.assertIn("Wheel odds", "\n".join(f.name for f in shop.fields))
         board = creator.leaderboard_embed(self.guild, g)
         self.assertIn("leaderboard", board.title)
+
+    async def test_wheel_redeem_rolls_a_tier_and_flags_it_for_staff(self):
+        g = creator.gdata(self.guild.id)
+        creator.add_credits(g, self.member.id, 500, "test grant")
+        creator.save()
+        res = await creator.redeem(self.guild, self.member, "wheel")
+        self.assertTrue(res["ok"])
+        self.assertIn(res["wheel"], {"Common", "Rare", "Limited"})
+        g = creator.gdata(self.guild.id)
+        self.assertEqual(creator.credits(g, self.member.id), 100)
+        red = g["redemptions"][res["id"]]
+        self.assertEqual(red["wheel_tier"], res["wheel"])
+        card = self.guild.channels["review"].sent[-1]
+        self.assertIn("Wheel roll", card.embed.description)
 
     async def test_duplicate_submission_is_rejected(self):
         async def fake_inspect(url, creator_doc, settings, session=None):

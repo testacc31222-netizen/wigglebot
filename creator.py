@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import time
 import uuid
@@ -36,24 +37,24 @@ SITE_DATA_URL = os.getenv(
     "https://raw.githubusercontent.com/testacc31222-netizen/"
     "wigglesworth-moderator-apps/main/data.live.json").strip()
 
-# ---------- reward catalog (edit these values after staff approval) ----------
-# All amounts are Creator Credits. The shop is intentionally data-driven so the
-# catalog can change without touching code.
+# ---------- reward catalog (launch set) ----------
+# All amounts are Creator Credits. Only the rewards staff approved for launch are
+# listed here; add more entries later without touching the rest of the system.
 REWARD_CATALOG = [
     {"id": "cash", "name": "In-game cash bundle", "price": 250, "kind": "In-game",
-     "desc": "A bundle of in-game currency delivered by staff."},
-    {"id": "crate", "name": "Cosmetic crate", "price": 400, "kind": "Cosmetic",
-     "desc": "One cosmetic crate unlocked on your account."},
-    {"id": "title", "name": "Custom in-game title", "price": 600, "kind": "Cosmetic",
-     "desc": "A custom title above your name for 30 days (staff approved)."},
-    {"id": "early", "name": "Early access pass", "price": 900, "kind": "Access",
-     "desc": "Play the next update up to 7 days before public launch."},
-    {"id": "billboard", "name": "Hub billboard", "price": 1200, "kind": "Feature",
-     "desc": "Your channel promoted on an in-game billboard for 7 days."},
-    {"id": "adminvideo", "name": "Admin Menu video", "price": 1500, "kind": "Feature",
-     "desc": "Your video featured inside the in-game Admin Menu."},
-    {"id": "custom", "name": "Custom creator request", "price": 2000, "kind": "Custom",
-     "desc": "Work with staff on a small custom cosmetic or NPC idea."},
+     "desc": "A bundle of in-game cash handed over by staff."},
+    {"id": "wheel", "name": "Cosmetic crate — wheel spin", "price": 400, "kind": "Cosmetic",
+     "desc": "Spin the wheel for a random cosmetic. Odds are posted in the shop."},
+    {"id": "doublexp", "name": "Double XP weekend (whole server)", "price": 1500,
+     "kind": "Community",
+     "desc": "Staff turns on double XP for the whole server for one weekend."},
+]
+
+# Cosmetic wheel weights. Keep these public in the shop embed; total must be 100.
+WHEEL_PRIZES = [
+    {"tier": "Common", "chance": 60, "label": "common cosmetic"},
+    {"tier": "Rare", "chance": 30, "label": "rare cosmetic"},
+    {"tier": "Limited", "chance": 10, "label": "limited cosmetic"},
 ]
 
 TIERS = [
@@ -1000,10 +1001,27 @@ def shop_embed() -> discord.Embed:
              for item in REWARD_CATALOG]
     em = bm.ui.embed("🛍️ Creator shop", "\n\n".join(lines), "info",
                      footer="Wigglesworth • creator rewards • .creator redeem <item>")
+    odds = " · ".join(f"{p['tier']} {p['chance']}%" for p in WHEEL_PRIZES)
+    em.add_field(name="Wheel odds", value=odds + "\nEvery spin is a cosmetic crate.", inline=False)
+    em.add_field(name="Double XP weekends",
+                 value="Redeem any time; staff schedules and announces the next weekend.",
+                 inline=False)
     em.add_field(name="How it works",
                  value="Redeem with `.creator redeem <id>`. Staff deliver in-game, then mark it fulfilled.",
                  inline=False)
     return em
+
+
+def roll_wheel(rng=None) -> dict:
+    """Pick a cosmetic tier using the published weights."""
+    rng = rng or random
+    roll = rng.uniform(0, 100)
+    upto = 0
+    for prize in WHEEL_PRIZES:
+        upto += prize["chance"]
+        if roll < upto:
+            return prize
+    return WHEEL_PRIZES[-1]
 
 
 def find_item(key: str) -> dict | None:
@@ -1035,20 +1053,27 @@ async def redeem(guild, member: discord.Member, key: str) -> dict:
     red = {"id": rid, "user_id": str(member.id), "item": item["id"],
            "name": item["name"], "price": item["price"], "status": "requested",
            "created_at": now_ts(), "created_at_iso": iso_now()}
+    if item["id"] == "wheel":
+        prize = roll_wheel()
+        red["wheel_tier"] = prize["tier"]
+        red["wheel_prize"] = prize["label"]
     g["redemptions"][rid] = red
     add_credits(g, member.id, -item["price"], f"redeem {item['name']} ({rid})")
     review_ch = await _channel(guild, "review_channel")
     if review_ch:
+        extra = ""
+        if red.get("wheel_tier"):
+            extra = f"\nWheel roll: **{red['wheel_tier']}** — grant a {red['wheel_prize']}."
         em = bm.ui.embed(f"🎁 Redemption — {item['name']}",
                          f"Creator: {member.mention}\nItem: **{item['name']}**\n"
-                         f"Cost: **{item['price']} credits**\nRequest: `{rid}`",
+                         f"Cost: **{item['price']} credits**\nRequest: `{rid}`" + extra,
                          "warning", footer="Wigglesworth • creator rewards")
         msg = await _send(review_ch, em, RedeemView())
         if msg:
             red["message_id"] = msg.id
             g.setdefault("by_redeem_message", {})[str(msg.id)] = rid
     save()
-    return {"ok": True, "id": rid, "item": item}
+    return {"ok": True, "id": rid, "item": item, "wheel": red.get("wheel_tier")}
 
 
 def leaderboard_embed(guild, g: dict) -> discord.Embed:
@@ -1221,7 +1246,8 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
             return
         res = await redeem(ctx.guild, ctx.author, rest)
         if res.get("ok"):
-            await ctx.reply(f"Redeemed **{res['item']['name']}** — request `{res['id']}`. "
+            wheel = f" Wheel rolled: **{res['wheel']}**." if res.get("wheel") else ""
+            await ctx.reply(f"Redeemed **{res['item']['name']}** — request `{res['id']}`.{wheel} "
                             f"Staff will deliver it in-game.", mention_author=False)
         else:
             await ctx.reply(res.get("error") or "Could not redeem.", mention_author=False)

@@ -95,10 +95,31 @@ class CreditTests(unittest.TestCase):
 
     def test_shop_items_are_unique_and_positive(self):
         ids = [i["id"] for i in creator.REWARD_CATALOG]
+        self.assertEqual(ids, ["cash", "wheel", "doublexp"])
         self.assertEqual(len(ids), len(set(ids)))
         self.assertTrue(all(i["price"] > 0 for i in creator.REWARD_CATALOG))
-        self.assertEqual(creator.find_item("billboard")["price"], 1200)
+        self.assertEqual(creator.find_item("cash")["price"], 250)
+        self.assertEqual(creator.find_item("wheel")["price"], 400)
+        self.assertEqual(creator.find_item("doublexp")["price"], 1500)
         self.assertIsNone(creator.find_item("nope"))
+
+    def test_wheel_weights_are_published_and_bounded(self):
+        self.assertEqual(sum(p["chance"] for p in creator.WHEEL_PRIZES), 100)
+
+        class Rng:
+            def __init__(self, value):
+                self.value = value
+
+            def uniform(self, _a, _b):
+                return self.value
+
+        self.assertEqual(creator.roll_wheel(Rng(0))["tier"], "Common")
+        self.assertEqual(creator.roll_wheel(Rng(59.9))["tier"], "Common")
+        self.assertEqual(creator.roll_wheel(Rng(60))["tier"], "Rare")
+        self.assertEqual(creator.roll_wheel(Rng(89.9))["tier"], "Rare")
+        self.assertEqual(creator.roll_wheel(Rng(90))["tier"], "Limited")
+        self.assertEqual(creator.roll_wheel(Rng(99.9))["tier"], "Limited")
+        self.assertEqual(creator.roll_wheel(Rng(100))["tier"], "Limited")
 
 
 class EligibilityTests(unittest.IsolatedAsyncioTestCase):
