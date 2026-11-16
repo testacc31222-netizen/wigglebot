@@ -677,6 +677,16 @@ async def _channel(guild: discord.Guild, key: str) -> discord.TextChannel | None
     return ch if isinstance(ch, discord.TextChannel) else None
 
 
+async def _submission_channel(guild, sub: dict):
+    """Where the original post lives: a channel normally, a thread in forums."""
+    cid = int(sub.get("submission_channel_id") or 0)
+    if cid:
+        ch = guild.get_channel(cid) or guild.get_thread(cid)
+        if ch is not None:
+            return ch
+    return await _channel(guild, "submissions_channel")
+
+
 async def _send(channel, embed=None, view=None, content=None):
     try:
         return await channel.send(content=content, embed=embed, view=view,
@@ -824,7 +834,7 @@ async def approve_submission(guild, sub: dict, staff: discord.abc.User, source="
         if msg:
             sub["approved_message_id"] = msg.id
     # Update the original submission message with a receipt.
-    sub_ch = await _channel(guild, "submissions_channel")
+    sub_ch = await _submission_channel(guild, sub)
     if sub_ch and sub.get("submission_message_id"):
         try:
             original = await sub_ch.fetch_message(int(sub["submission_message_id"]))
@@ -849,7 +859,7 @@ async def reject_submission(guild, sub: dict, staff: discord.abc.User, reason: s
     sub["decided_at_iso"] = iso_now()
     sub["staff_note"] = (reason or "Rejected.")[:1000]
     sub["source"] = source
-    sub_ch = await _channel(guild, "submissions_channel")
+    sub_ch = await _submission_channel(guild, sub)
     if sub_ch and sub.get("submission_message_id"):
         try:
             original = await sub_ch.fetch_message(int(sub["submission_message_id"]))
@@ -870,7 +880,12 @@ async def handle_message(message: discord.Message) -> bool:
         return False
     g = gdata(message.guild.id)
     sub_ch = int(g["settings"].get("submissions_channel") or 0)
-    if not sub_ch or message.channel.id != sub_ch:
+    if not sub_ch:
+        return False
+    channel = message.channel
+    # Forum channels deliver each post as a thread whose parent is the forum.
+    in_forum_post = getattr(channel, "parent_id", None) == sub_ch
+    if channel.id != sub_ch and not in_forum_post:
         return False
     content = (message.content or "").strip()
     if content.startswith(PREFIX):

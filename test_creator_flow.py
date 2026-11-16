@@ -93,6 +93,12 @@ class FakeChannel:
         return self.messages[int(mid)]
 
 
+class FakeThread(FakeChannel):
+    def __init__(self, guild, parent, name="forum-post"):
+        super().__init__(guild, name)
+        self.parent_id = parent.id
+
+
 class FakeGuild:
     def __init__(self):
         self.id = 42
@@ -101,11 +107,15 @@ class FakeGuild:
         self.roles = []
         self.members = {}
         self.channels = {}
+        self.threads = {}
         for name in ("submissions", "review", "approved"):
             self.channels[name] = FakeChannel(self, name)
 
     def get_channel(self, cid):
         return next((c for c in self.channels.values() if c.id == int(cid)), None)
+
+    def get_thread(self, tid):
+        return self.threads.get(int(tid))
 
     def get_role(self, rid):
         return next((r for r in self.roles if r.id == rid), None)
@@ -124,6 +134,8 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.guild = FakeGuild()
         self.member = FakeMember(7, "VidMaker")
         self.staff = FakeMember(8, "Mod", staff=True)
+        self.member.guild = self.guild
+        self.staff.guild = self.guild
         self.guild.members = {7: self.member, 8: self.staff}
         g = creator.gdata(self.guild.id)
         g["settings"].update({
@@ -177,6 +189,29 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         # saved to disk
         saved = json.loads(creator.DATA_FILE.read_text(encoding="utf-8"))
         self.assertEqual(saved["guilds"]["42"]["submissions"][res["id"]]["status"], "approved")
+
+    async def test_forum_post_is_processed_as_a_submission(self):
+        forum = self.guild.channels["submissions"]
+        thread = FakeThread(self.guild, forum)
+        self.guild.threads[thread.id] = thread
+
+        async def fake_inspect(url, creator_doc, settings, session=None):
+            return self.checks("approve")
+        orig = creator.inspect_video
+        creator.inspect_video = fake_inspect
+        try:
+            msg = FakeMessage(thread, self.member, "https://youtu.be/abc123")
+            consumed = await creator.handle_message(msg)
+        finally:
+            creator.inspect_video = orig
+
+        self.assertTrue(consumed)
+        g = creator.gdata(self.guild.id)
+        self.assertEqual(len(g["submissions"]), 1)
+        sub = next(iter(g["submissions"].values()))
+        self.assertEqual(sub["submission_channel_id"], thread.id)
+        self.assertEqual(sub["status"], "approved")
+        self.assertIn("✅", msg.reactions)
 
     async def test_unclear_video_goes_to_review_channel(self):
         async def fake_inspect(url, creator_doc, settings, session=None):
