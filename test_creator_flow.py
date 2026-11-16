@@ -185,6 +185,10 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sub["credits"], 85)  # 50 base + 10 long + 25 weekly mission
         self.assertEqual(creator.credits(g, self.member.id), 85)
         self.assertEqual(len(self.guild.channels["approved"].sent), 1)
+        showcase = self.guild.channels["approved"].sent[0]
+        self.assertIsNone(showcase.embed)
+        self.assertIn("https://www.youtube.com/watch?v=abc123", showcase.content)
+        self.assertIn("+85 credits", showcase.content)
         self.assertIn("✅", msg.reactions)
         # saved to disk
         saved = json.loads(creator.DATA_FILE.read_text(encoding="utf-8"))

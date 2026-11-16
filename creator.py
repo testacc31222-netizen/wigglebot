@@ -627,6 +627,16 @@ def submission_embed(guild, sub: dict, review: bool = True) -> discord.Embed:
     return em
 
 
+def showcase_content(sub: dict) -> str:
+    """Plain message (no embed) so Discord shows the video player preview."""
+    title = str(sub.get("title") or "Creator video").strip()[:200]
+    url = str(sub.get("url") or sub.get("original_url") or "")
+    credits = fmt_int(sub.get("credits"))
+    return (f"✅ **{title}**\n"
+            f"{url}\n"
+            f"<@{sub['user_id']}> · **+{credits} credits** · `.creator progress`")
+
+
 def approved_embed(guild, sub: dict) -> discord.Embed:
     em = submission_embed(guild, sub, review=False)
     em.title = f"✅ Approved — {sub.get('title') or 'Creator video'}"
@@ -847,7 +857,7 @@ async def approve_submission(guild, sub: dict, staff: discord.abc.User, source="
         sub["mission_notes"] = amount["notes"]
     approved_ch = await _channel(guild, "approved_channel")
     if approved_ch:
-        msg = await _send(approved_ch, approved_embed(guild, sub))
+        msg = await _send(approved_ch, content=showcase_content(sub))
         if msg:
             sub["approved_message_id"] = msg.id
     # Update the original submission message with a receipt.
