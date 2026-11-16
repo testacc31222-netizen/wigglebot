@@ -221,6 +221,21 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(g["redemptions"][red_id]["status"], "requested")
         self.assertEqual(g["by_redeem_message"][str(queued[0].id)], red_id)
 
+    async def test_progress_and_shop_embeds_render(self):
+        g = creator.gdata(self.guild.id)
+        creator.add_credits(g, self.member.id, 300, "test")
+        creator.save()
+        prog = creator.progress_embed(self.guild, g, self.member)
+        text = "\n".join((prog.description or "", *(f.value for f in prog.fields)))
+        self.assertIn("Creator", text)
+        self.assertIn("300", text)
+        self.assertIn("missions", text)
+        shop = creator.shop_embed()
+        self.assertIn("Creator shop", shop.title)
+        self.assertIn("In-game cash bundle", shop.description)
+        board = creator.leaderboard_embed(self.guild, g)
+        self.assertIn("Leaderboard", board.title)
+
     async def test_duplicate_submission_is_rejected(self):
         async def fake_inspect(url, creator_doc, settings, session=None):
             return self.checks("approve")
