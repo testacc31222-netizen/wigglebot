@@ -689,6 +689,14 @@ async def _submission_channel(guild, sub: dict):
     cid = int(sub.get("submission_channel_id") or 0)
     if cid:
         ch = guild.get_channel(cid) or guild.get_thread(cid)
+        if ch is None:
+            # Forum posts archive after a while and drop out of the cache.
+            fetch = getattr(guild, "fetch_channel", None)
+            if fetch:
+                try:
+                    ch = await fetch(cid)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    ch = None
         if ch is not None:
             return ch
     return await _channel(guild, "submissions_channel")
