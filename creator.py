@@ -23,6 +23,8 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 import aiohttp
 import discord
 
+BUILD = "2026-11-16.4"  # bump on every push; printed at startup
+
 bm = None
 _bot = None
 
@@ -1335,7 +1337,7 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         if missing:
             lines.append("**Still needed:** " + " · ".join(f"`.creator {m}`" for m in missing))
         em = bm.ui.embed("⚙️ Creator setup", "\n".join(lines), "info",
-                         footer="Wigglesworth • creator rewards")
+                         footer=f"Wigglesworth • creator rewards • {BUILD}")
         await ctx.reply(embed=em, mention_author=False)
         return
 
@@ -1422,7 +1424,8 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         await ctx.reply(f"{user.mention} now has {fmt_int(bal)} credits.", mention_author=False)
         return
 
-    await ctx.reply("Unknown subcommand. Use `.creator help`.", mention_author=False)
+    await ctx.reply(f"Unknown subcommand. Use `.creator help`. (build {BUILD})",
+                    mention_author=False)
 
 
 # ---------- setup ----------
@@ -1438,6 +1441,7 @@ def setup(bot_module) -> None:
     load()
     _bot.add_view(ReviewView())
     _bot.add_view(RedeemView())
+    print(f"[creator] loaded build {BUILD} (15s min, forum posts, config command)")
     b = _bot
 
     async def _router(ctx, *, args: str = ""):
