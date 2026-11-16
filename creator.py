@@ -887,17 +887,20 @@ async def handle_message(message: discord.Message) -> bool:
     return True
 
 
-async def _reply_temp(message: discord.Message, text: str) -> None:
+async def _reply_temp(message: discord.Message, text: str, seconds: int = 12) -> None:
     try:
         sent = await message.reply(text, mention_author=False,
                                    allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
         return
-    await asyncio.sleep(12)
-    try:
-        await sent.delete()
-    except (discord.Forbidden, discord.HTTPException):
-        pass
+
+    async def _cleanup():
+        await asyncio.sleep(seconds)
+        try:
+            await sent.delete()
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    asyncio.create_task(_cleanup())
 
 
 async def process_submission(guild, author: discord.Member, url: str,
