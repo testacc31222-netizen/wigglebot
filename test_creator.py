@@ -17,6 +17,24 @@ def guild_data():
     }
 
 
+class SettingsTests(unittest.TestCase):
+    def setUp(self):
+        self._data = creator.DATA
+        creator.DATA = {"guilds": {}}
+
+    def tearDown(self):
+        creator.DATA = self._data
+
+    def test_old_default_15s_moves_to_10s(self):
+        creator.DATA = {"guilds": {"1": {"settings": {"min_seconds": 15}}}}
+        self.assertEqual(creator.gdata(1)["settings"]["min_seconds"], 10)
+
+    def test_staff_choice_is_kept(self):
+        creator.DATA = {"guilds": {"1": {"settings": {"min_seconds": 30,
+                                                      "min_seconds_custom": True}}}}
+        self.assertEqual(creator.gdata(1)["settings"]["min_seconds"], 30)
+
+
 class LinkTests(unittest.TestCase):
     def test_extracts_first_url_and_trims_punctuation(self):
         self.assertEqual(creator.extract_url("watch this https://youtu.be/abc123, lol"),
@@ -162,7 +180,7 @@ class EligibilityTests(unittest.IsolatedAsyncioTestCase):
             "youtube.com/oembed": {"title": "Clip", "author_name": "Mock Creator"},
             "googleapis.com": {"items": [{
                 "snippet": {"title": "Clip", "channelTitle": "Mock Creator"},
-                "contentDetails": {"duration": "PT10S"},
+                "contentDetails": {"duration": "PT8S"},
                 "statistics": {"viewCount": "5"},
                 "status": {"privacyStatus": "private"},
             }]},

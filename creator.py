@@ -23,7 +23,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 import aiohttp
 import discord
 
-BUILD = "2026-11-16.4"  # bump on every push; printed at startup
+BUILD = "2026-11-16.5"  # bump on every push; printed at startup
 
 bm = None
 _bot = None
@@ -84,7 +84,7 @@ DEFAULTS = {
     "submissions_channel": 0,
     "review_channel": 0,
     "approved_channel": 0,
-    "min_seconds": 15,
+    "min_seconds": 10,
     "min_seconds_custom": False,
     "auto_approve": True,
     "require_linked_channel": True,
@@ -167,9 +167,9 @@ def gdata(guild_id) -> dict:
     g.setdefault("missions", {})
     for k, v in DEFAULTS.items():
         g["settings"].setdefault(k, v)
-    # Older saves were created when the default minimum was 60s. Skits/shorts are
-    # the norm here, so drop the untouched old default down to the new one.
-    if g["settings"].get("min_seconds") == 60 and not g["settings"].get("min_seconds_custom"):
+    # Older saves were created when the default minimum was 60s, then 15s. Skits and
+    # shorts are the norm here, so move an untouched old default to the current one.
+    if not g["settings"].get("min_seconds_custom") and g["settings"].get("min_seconds") in (60, 15):
         g["settings"]["min_seconds"] = DEFAULTS["min_seconds"]
     return g
 
@@ -381,7 +381,7 @@ async def inspect_video(url: str, creator: dict | None, settings: dict,
                 result["reasons"].append("Creator has not linked their channel yet (`.creator link <url>`).")
 
         if result["duration_s"] is not None:
-            limit = int(settings.get("min_seconds", 15))
+            limit = int(settings.get("min_seconds", 10))
             if result["duration_s"] < limit:
                 result["reasons"].append(
                     f"Video is only {result['duration_s']}s — under the {limit}s minimum, staff check needed.")
@@ -1219,7 +1219,7 @@ HELP = """**Creator commands**
 `.creator approvedchannel #channel` — where approved videos are showcased
 `.creator setrole @role` — which role may submit
 `.creator config` — show the current setup
-`.creator setmin <seconds>` — shortest video that auto-approves (default 15)
+`.creator setmin <seconds>` — shortest video that auto-approves (default 10)
 `.creator sync` — pull approved creator channels from the site
 `.creator submissions` — latest submissions
 `.creator approve <id>` — approve and award credits
@@ -1337,7 +1337,7 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
             f"**Review:** {_ch('review_channel')}",
             f"**Showcase:** {_ch('approved_channel')}",
             f"**Creator role:** {role.mention if role else '❌ not set'}",
-            f"**Minimum length:** {s.get('min_seconds', 15)}s",
+            f"**Minimum length:** {s.get('min_seconds', 10)}s",
             f"**Auto-approve:** {'on' if s.get('auto_approve', True) else 'off'}",
         ]
         missing = [n for n, k in (("submitchannel", "submissions_channel"),
@@ -1365,7 +1365,7 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
 
     if sub == "setmin":
         if not rest.isdigit():
-            await ctx.reply("Usage: `.creator setmin <seconds>` (default 15)", mention_author=False)
+            await ctx.reply("Usage: `.creator setmin <seconds>` (default 10)", mention_author=False)
             return
         secs = max(1, min(int(rest), 3600))
         g["settings"]["min_seconds"] = secs
@@ -1451,7 +1451,7 @@ def setup(bot_module) -> None:
     load()
     _bot.add_view(ReviewView())
     _bot.add_view(RedeemView())
-    print(f"[creator] loaded build {BUILD} (15s min, forum posts, config command)")
+    print(f"[creator] loaded build {BUILD} (10s min, forum posts, config command)")
     b = _bot
 
     async def _router(ctx, *, args: str = ""):
