@@ -22,6 +22,7 @@ import ui
 import staff_tools
 import holiday
 import voice_tts
+import creator
 
 load_dotenv()
 
@@ -736,6 +737,17 @@ async def on_ready() -> None:
     community.setup(_sys.modules[__name__])  # idempotent; commands, views, scheduler
     staff_tools.setup(_sys.modules[__name__])
     holiday.setup(_sys.modules[__name__])
+    creator.setup(_sys.modules[__name__])  # creator rewards: commands + persistent views
+
+    async def _creator_sync():
+        try:
+            res = await creator.sync_site(bot)
+            if not res.get("skipped"):
+                print(f"[creator] site sync: linked {res.get('linked', 0)} channel(s) "
+                      f"from {res.get('approved', 0)} approved application(s)")
+        except Exception as exc:
+            print(f"[creator] site sync failed: {type(exc).__name__}: {exc}")
+    asyncio.create_task(_creator_sync())
     bot.add_view(VerifyView())  # keep the ✅ button alive across restarts
     rr_register_saved()  # re-arm role menus (defined below, resolved at runtime)
     if not qotd_loop.is_running():
@@ -933,6 +945,13 @@ async def on_message(message: discord.Message) -> None:
     if not bot_enabled:
         await bot.process_commands(message)  # only .enable gets through (global check)
         return
+    # Creator submissions: a video link in the configured submissions channel is
+    # checked, then approved or routed to staff review. Commands pass through.
+    try:
+        if await creator.handle_message(message):
+            return
+    except Exception as exc:
+        print(f"[creator] message failed: {type(exc).__name__}: {exc}")
     cfg = get_config(message.guild.id)
     # message statistics — every real, non-bot guild message counts
     # (edits never re-count: this listener only fires for new messages)
@@ -4886,6 +4905,11 @@ async def cmd_help(ctx: commands.Context) -> None:
                         "`.cases [@user]` · `.apply` · `.serverinfo` · `.userinfo [@user]`\n"
                         "`.giveaway list` · `.giveaway info <id>` · `.raidstatus`"),
                  inline=False)
+    em.add_field(name="🎬 Creators",
+                 value=("`.creator progress` — credits, tier, weekly missions\n"
+                        "`.creator shop` · `.creator redeem <item>` · `.creator leaderboard`\n"
+                        "`.creator link <channel url>` · `.creator submit <video link>`"),
+                 inline=False)
     await ctx.send(embed=em, allowed_mentions=discord.AllowedMentions.none())
 
 
@@ -4918,6 +4942,12 @@ async def cmd_help2(ctx: commands.Context) -> None:
     em.add_field(name="🛡️ Mod (admin+)",
                  value=("`.purge` · `.mute` · `.unmute` · `.slowmode` · `.lockdown` · `.unlock`\n"
                         "`.raidmode` · `.raidconfig` · `.whitelist` · `.temprole` · `.poll end`"),
+                 inline=False)
+    em.add_field(name="🎬 Creators (open + staff)",
+                 value=("`.creator progress|shop|redeem|leaderboard|link|submit`\n"
+                        "`staff:` `.creator submitchannel|reviewchannel|approvedchannel` · "
+                        "`.creator setrole` · `.creator sync` · `.creator submissions` · "
+                        "`.creator approve|reject <id>` · `.creator grant @user <credits>`"),
                  inline=False)
     em.add_field(name="⚙️ Setup (owner/admin)",
                  value=("`.teach` · `.unteach` · `.mood` · `.chaton` · `.chatoff` · `.setqotd`\n"
