@@ -162,15 +162,33 @@ class EligibilityTests(unittest.IsolatedAsyncioTestCase):
             "youtube.com/oembed": {"title": "Clip", "author_name": "Mock Creator"},
             "googleapis.com": {"items": [{
                 "snippet": {"title": "Clip", "channelTitle": "Mock Creator"},
-                "contentDetails": {"duration": "PT15S"},
+                "contentDetails": {"duration": "PT10S"},
                 "statistics": {"viewCount": "5"},
                 "status": {"privacyStatus": "private"},
             }]},
         }
         res = await self.inspect("https://youtu.be/abc123", payloads, api_key="key")
         self.assertEqual(res["verdict"], "review")
-        self.assertTrue(any("shorter" in r for r in res["reasons"]))
+        self.assertTrue(any("minimum" in r for r in res["reasons"]))
         self.assertTrue(any("not public" in r for r in res["reasons"]))
+
+    async def test_short_skit_auto_approves_by_default(self):
+        payloads = {
+            "youtube.com/oembed": {"title": "Skid", "author_name": "Mock Creator",
+                                   "author_url": "https://www.youtube.com/@MockCreator"},
+            "googleapis.com": {"items": [{
+                "snippet": {"title": "Skid", "channelTitle": "Mock Creator"},
+                "contentDetails": {"duration": "PT26S"},
+                "statistics": {"viewCount": "40"},
+                "status": {"privacyStatus": "public"},
+            }]},
+        }
+        res = await self.inspect("https://youtube.com/shorts/abc123", payloads,
+                                 creator_doc={"channel": "https://youtube.com/@mockcreator"},
+                                 api_key="key")
+        self.assertEqual(res["duration_s"], 26)
+        self.assertEqual(res["reasons"], [])
+        self.assertEqual(res["verdict"], "approve")
 
     async def test_channel_mismatch_goes_to_review(self):
         payloads = {

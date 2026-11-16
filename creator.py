@@ -82,7 +82,8 @@ DEFAULTS = {
     "submissions_channel": 0,
     "review_channel": 0,
     "approved_channel": 0,
-    "min_seconds": 60,
+    "min_seconds": 15,
+    "min_seconds_custom": False,
     "auto_approve": True,
     "require_linked_channel": True,
     "base_credits": BASE_CREDITS,
@@ -164,6 +165,10 @@ def gdata(guild_id) -> dict:
     g.setdefault("missions", {})
     for k, v in DEFAULTS.items():
         g["settings"].setdefault(k, v)
+    # Older saves were created when the default minimum was 60s. Skits/shorts are
+    # the norm here, so drop the untouched old default down to the new one.
+    if g["settings"].get("min_seconds") == 60 and not g["settings"].get("min_seconds_custom"):
+        g["settings"]["min_seconds"] = DEFAULTS["min_seconds"]
     return g
 
 
@@ -373,9 +378,11 @@ async def inspect_video(url: str, creator: dict | None, settings: dict,
             if result["channel_match"] is None and settings.get("require_linked_channel", True):
                 result["reasons"].append("Creator has not linked their channel yet (`.creator link <url>`).")
 
-        if result["duration_s"] is not None and result["duration_s"] < int(settings.get("min_seconds", 60)):
-            result["reasons"].append(
-                f"Video is shorter than {settings.get('min_seconds', 60)}s — staff check needed.")
+        if result["duration_s"] is not None:
+            limit = int(settings.get("min_seconds", 15))
+            if result["duration_s"] < limit:
+                result["reasons"].append(
+                    f"Video is only {result['duration_s']}s — under the {limit}s minimum, staff check needed.")
         if result["public"] is False:
             result["reasons"].append("Video is not public — staff check needed.")
         if result["channel_match"] is False:
@@ -1191,6 +1198,7 @@ HELP = """**Creator commands**
 `.creator reviewchannel #channel` — where unclear videos go
 `.creator approvedchannel #channel` — where approved videos are showcased
 `.creator setrole @role` — which role may submit
+`.creator setmin <seconds>` — shortest video that auto-approves (default 15)
 `.creator sync` — pull approved creator channels from the site
 `.creator submissions` — latest submissions
 `.creator approve <id>` — approve and award credits
@@ -1301,6 +1309,18 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         g["settings"]["role_id"] = role.id
         save()
         await ctx.reply(f"Creator role set to **{role.name}**.", mention_author=False)
+        return
+
+    if sub == "setmin":
+        if not rest.isdigit():
+            await ctx.reply("Usage: `.creator setmin <seconds>` (default 15)", mention_author=False)
+            return
+        secs = max(1, min(int(rest), 3600))
+        g["settings"]["min_seconds"] = secs
+        g["settings"]["min_seconds_custom"] = True
+        save()
+        await ctx.reply(f"Videos must now be at least **{secs}s** to auto-approve. "
+                        "Shorter ones go to staff review.", mention_author=False)
         return
 
     if sub == "sync":
