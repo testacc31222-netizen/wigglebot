@@ -1072,6 +1072,109 @@ class RedeemView(discord.ui.View):
         await self._finish(interaction, False)
 
 
+# ---------- shop buy view ----------
+
+class ShopBuyView(discord.ui.View):
+    """Persistent buy buttons for the creator shop, visible to everyone."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Buy: In-game cash bundle — 250 credits",
+        style=discord.ButtonStyle.primary,
+        custom_id="creator:shop:buy:cash",
+    )
+    async def cash_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._buy_item(interaction, "cash")
+
+    @discord.ui.button(
+        label="Buy: Cosmetic crate — 400 credits",
+        style=discord.ButtonStyle.primary,
+        custom_id="creator:shop:buy:wheel",
+    )
+    async def wheel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._buy_item(interaction, "wheel")
+
+    @discord.ui.button(
+        label="Buy: Double XP weekend — 1500 credits",
+        style=discord.ButtonStyle.primary,
+        custom_id="creator:shop:buy:doublexp",
+    )
+    async def doublexp_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._buy_item(interaction, "doublexp")
+
+    async def _buy_item(self, interaction: discord.Interaction, key: str) -> None:
+        from creator import gdata, find_item, credits, add_credits, fmt_int, _notify_owner, WHEEL_PRIZES, random, time, iso_now
+
+        g = gdata(interaction.guild_id)
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member is None:
+            await interaction.response.send_message("This can only be used by server members.", ephemeral=True)
+            return
+
+        item = find_item(key)
+        if not item:
+            await interaction.response.send_message("Unknown reward.", ephemeral=True)
+            return
+
+        bal = credits(g, member.id)
+        if bal < item["price"]:
+            await interaction.response.send_message(
+                f"Not enough credits ({fmt_int(bal)}/{item['price']}).", ephemeral=True)
+            return
+
+        # Deduct credits
+        remaining = add_credits(g, member.id, -item["price"], f"buy {item['name']} ({uuid.uuid4().hex[:6].upper()})")
+
+        # Create redemption record
+        rid = "RD-" + uuid.uuid4().hex[:6].upper()
+        red = {"id": rid, "user_id": str(member.id), "item": item["id"],
+               "name": item["name"], "price": item["price"], "status": "requested",
+               "remaining_after": remaining, "owner_notified": False,
+               "created_at": time.time(), "created_at_iso": iso_now()}
+        if item["id"] == "wheel":
+            roll = random.uniform(0, 100)
+            upto = 0
+            for prize in WHEEL_PRIZES:
+                upto += prize["chance"]
+                if roll < upto:
+                    tier = prize["tier"]
+                    label = prize["label"]
+                    break
+            red["wheel_tier"] = tier
+            red["wheel_prize"] = label
+        g["redemptions"][rid] = red
+
+        # Build delivery embed for the owner
+        extra = ""
+        if red.get("wheel_tier"):
+            extra = f"\nWheel roll: **{red['wheel_tier']}** — grant a {red['wheel_prize']}."
+
+        em = bm.ui.embed(
+            f"🛍️ New purchase — {item['name']}",
+            f"Buyer: {member.mention}\nItem: **{item['name']}**\n"
+            f"Cost: **{fmt_int(item['price'])} credits**\n"
+            f"Balance left: **{fmt_int(remaining)} credits**\n"
+            f"Request: `{rid}`{extra}\n\n"
+            "Deliver it in-game, then press **Delivered**. "
+            "Use **Refund** to return the credits.",
+            "warning", footer="Wigglesworth • creator rewards • owner action")
+
+        # Ping the owner
+        await _notify_owner(
+            interaction.guild,
+            f"New creator purchase from {member.mention} needs delivery.",
+            embed=em,
+            view=RedeemView())
+
+        # Confirm to the buyer in the channel (visible to all)
+        await interaction.response.send_message(
+            f"Bought **{item['name']}** for {fmt_int(item['price'])} credits — "
+            f"request `{rid}`. Balance left: {fmt_int(remaining)} credits. "
+            "Staff will follow up to deliver it.", mention_author=False)
+
+
 # ---------- decisions ----------
 
 async def approve_submission(guild, sub: dict, staff: discord.abc.User, source="command",
@@ -1287,8 +1390,8 @@ def shop_embed(g: dict | None = None, member=None) -> discord.Embed:
     em = bm.ui.embed("🛍️ Creator shop", "\n\n".join(lines), "info",
                      footer="Wigglesworth • creator rewards • .creator shop")
     em.add_field(name="How to buy",
-                 value="`.creator buy 1` (or `.creator buy cash`). Credits are taken "
-                       "immediately and the owner is pinged to deliver in-game.",
+                 value="Click the **Buy** buttons below to purchase instantly. "
+                       "Credits are taken immediately and the owner is pinged to deliver in-game.",
                  inline=False)
     odds = " · ".join(f"{p['tier']} {p['chance']}%" for p in WHEEL_PRIZES)
     em.add_field(name="Wheel odds", value=odds + "\nEvery spin is a cosmetic crate.", inline=False)
