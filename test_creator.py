@@ -1,5 +1,6 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import creator
@@ -14,6 +15,7 @@ def guild_data():
         "ledger": [],
         "redemptions": {},
         "missions": {},
+        "allowances": {},
     }
 
 
@@ -119,6 +121,10 @@ class CreditTests(unittest.TestCase):
         self.assertEqual(creator.find_item("cash")["price"], 250)
         self.assertEqual(creator.find_item("wheel")["price"], 400)
         self.assertEqual(creator.find_item("doublexp")["price"], 1500)
+        self.assertEqual(creator.find_item("1")["id"], "cash")
+        self.assertEqual(creator.find_item("3")["id"], "doublexp")
+        self.assertIsNone(creator.find_item("0"))
+        self.assertIsNone(creator.find_item("9"))
         self.assertIsNone(creator.find_item("nope"))
 
     def test_wheel_weights_are_published_and_bounded(self):
@@ -138,6 +144,64 @@ class CreditTests(unittest.TestCase):
         self.assertEqual(creator.roll_wheel(Rng(90))["tier"], "Limited")
         self.assertEqual(creator.roll_wheel(Rng(99.9))["tier"], "Limited")
         self.assertEqual(creator.roll_wheel(Rng(100))["tier"], "Limited")
+
+
+class AllowanceTests(unittest.TestCase):
+    def guild(self):
+        return SimpleNamespace(
+            id=42, roles=[],
+            get_member=lambda uid: object() if int(uid) == 7 else None)
+
+    def test_reward_owner_setting_wins(self):
+        g = guild_data()
+        g["settings"]["owner_id"] = 123
+        guild = SimpleNamespace(owner_id=9)
+        with mock.patch.dict(os.environ, {"CREATOR_OWNER_ID": ""}):
+            self.assertEqual(creator.owner_ids(guild, g), [123])
+            g["settings"]["owner_id"] = 0
+            self.assertEqual(creator.owner_ids(guild, g), [9])
+
+    def test_monthly_gold_defaults_to_500(self):
+        g = guild_data()
+        self.assertEqual(creator.allowance_gold(g), 500)
+        g["settings"]["allowance_gold"] = "750"
+        self.assertEqual(creator.allowance_gold(g), 750)
+        g["settings"]["allowance_gold"] = "not a number"
+        self.assertEqual(creator.allowance_gold(g), creator.MONTHLY_GOLD)
+
+    def test_queue_is_once_per_month_and_survives_repeats(self):
+        g = guild_data()
+        g["creators"]["7"] = {"channel": "https://youtube.com/@x"}
+        with mock.patch.object(creator, "save"):
+            first = creator.queue_allowances(self.guild(), g, "2026-11")
+            second = creator.queue_allowances(self.guild(), g, "2026-11")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        self.assertEqual(g["allowances"]["7"]["gold"], 500)
+        self.assertEqual(g["allowances"]["7"]["status"], "pending")
+
+    def test_new_month_queues_again(self):
+        g = guild_data()
+        g["creators"]["7"] = {}
+        with mock.patch.object(creator, "save"):
+            creator.queue_allowances(self.guild(), g, "2026-11")
+            creator.mark_allowance_paid(g, 7, by=8, month="2026-11")
+            again = creator.queue_allowances(self.guild(), g, "2026-12")
+        self.assertEqual(len(again), 1)
+        self.assertEqual(g["allowances"]["7"]["month"], "2026-12")
+        self.assertEqual(g["allowances"]["7"]["status"], "pending")
+
+    def test_paid_and_disabled(self):
+        g = guild_data()
+        g["creators"]["7"] = {}
+        with mock.patch.object(creator, "save"):
+            creator.queue_allowances(self.guild(), g, "2026-11")
+            self.assertTrue(creator.mark_allowance_paid(g, 7, by=8, month="2026-11"))
+            self.assertFalse(creator.mark_allowance_paid(g, 7, by=8, month="2026-11"))
+            self.assertEqual(creator.mark_all_allowances_paid(g, by=8, month="2026-11"), 0)
+            g["settings"]["allowance_enabled"] = False
+            self.assertEqual(creator.queue_allowances(self.guild(), g, "2027-01"), [])
+        self.assertEqual(g["allowances"]["7"]["status"], "paid")
 
 
 class EligibilityTests(unittest.IsolatedAsyncioTestCase):

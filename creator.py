@@ -23,7 +23,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 import aiohttp
 import discord
 
-BUILD = "2026-11-16.5"  # bump on every push; printed at startup
+BUILD = "2026-11-23.1"  # bump on every push; printed at startup
 
 bm = None
 _bot = None
@@ -79,8 +79,13 @@ BASE_CREDITS = 50
 LONG_VIDEO_SECONDS = 300
 LONG_VIDEO_BONUS = 10
 
+# Monthly in-game gold paid to every Content Creator. Staff deliver it in-game;
+# the bot only tracks who is owed what and pings the owner.
+MONTHLY_GOLD = 500
+
 DEFAULTS = {
     "role_id": 0,
+    "owner_id": 0,
     "submissions_channel": 0,
     "review_channel": 0,
     "approved_channel": 0,
@@ -89,6 +94,8 @@ DEFAULTS = {
     "auto_approve": True,
     "require_linked_channel": True,
     "base_credits": BASE_CREDITS,
+    "allowance_enabled": True,
+    "allowance_gold": MONTHLY_GOLD,
 }
 
 VIDEO_HOSTS = {
@@ -165,6 +172,7 @@ def gdata(guild_id) -> dict:
     g.setdefault("ledger", [])
     g.setdefault("redemptions", {})
     g.setdefault("missions", {})
+    g.setdefault("allowances", {})
     for k, v in DEFAULTS.items():
         g["settings"].setdefault(k, v)
     # Older saves were created when the default minimum was 60s, then 15s. Skits and
@@ -479,6 +487,99 @@ def add_credits(g: dict, user_id, amount: int, reason: str, by=None) -> int:
     return g["credits"][uid]
 
 
+# ---------- monthly gold allowance ----------
+
+def allowance_gold(g: dict) -> int:
+    try:
+        return max(0, int(g["settings"].get("allowance_gold", MONTHLY_GOLD)))
+    except (TypeError, ValueError):
+        return MONTHLY_GOLD
+
+
+def allowance_recipients(guild, g: dict) -> list[int]:
+    """Current CC-role holders; fall back to known creators if the cache is empty."""
+    role = creator_role(guild, g)
+    if role is not None:
+        members = [m for m in (getattr(role, "members", []) or [])
+                   if not getattr(m, "bot", False)]
+        if members:
+            return sorted({int(m.id) for m in members})
+    ids: set[int] = set()
+    for uid in g.get("creators", {}):
+        if str(uid).isdigit():
+            ids.add(int(uid))
+    for uid in g.get("credits", {}):
+        if str(uid).isdigit():
+            ids.add(int(uid))
+    for sub in g.get("submissions", {}).values():
+        uid = str(sub.get("user_id") or "")
+        if uid.isdigit():
+            ids.add(int(uid))
+    if guild is not None:
+        # Don't carry a debt for someone who has left the server.
+        ids = {uid for uid in ids if guild.get_member(uid) is not None}
+    return sorted(ids)
+
+
+def queue_allowances(guild, g: dict, month: str | None = None) -> list[dict]:
+    """Create this month's allowance records once. Safe to call repeatedly."""
+    month = month or month_key()
+    if not g["settings"].get("allowance_enabled", True):
+        return []
+    gold = allowance_gold(g)
+    new: list[dict] = []
+    for uid in allowance_recipients(guild, g):
+        rec = g["allowances"].get(str(uid)) or {}
+        if rec.get("month") == month and rec.get("status") in ("pending", "paid"):
+            continue
+        if rec and rec.get("month") != month and rec.get("status") == "pending":
+            # Keep an unpaid older month visible in history instead of erasing it.
+            history = g.setdefault("allowance_history", [])
+            history.insert(0, dict(rec))
+            del history[200:]
+        rec = {
+            "user_id": str(uid), "month": month, "gold": gold,
+            "status": "pending", "created_at": iso_now(),
+        }
+        g["allowances"][str(uid)] = rec
+        new.append(rec)
+    if new:
+        save()
+    return new
+
+
+def allowance_month(g: dict, month: str | None = None) -> list[dict]:
+    month = month or month_key()
+    return [r for r in g["allowances"].values() if r.get("month") == month]
+
+
+def mark_allowance_paid(g: dict, user_id, by=None, month: str | None = None) -> bool:
+    month = month or month_key()
+    rec = g["allowances"].get(str(user_id)) or {}
+    if rec.get("month") != month or rec.get("status") == "paid":
+        return False
+    rec["status"] = "paid"
+    rec["paid_at"] = iso_now()
+    rec["paid_by"] = str(by or "")
+    save()
+    return True
+
+
+def mark_all_allowances_paid(g: dict, by=None, month: str | None = None) -> int:
+    month = month or month_key()
+    changed = 0
+    for rec in allowance_month(g, month):
+        if rec.get("status") == "paid":
+            continue
+        rec["status"] = "paid"
+        rec["paid_at"] = iso_now()
+        rec["paid_by"] = str(by or "")
+        changed += 1
+    if changed:
+        save()
+    return changed
+
+
 def _missions_for(g: dict, user_id, decided_ts: float, commit: bool) -> tuple[int, list[str]]:
     """Preview (commit=False) or apply (commit=True) this video's weekly missions."""
     wk = week_key(decided_ts)
@@ -571,6 +672,13 @@ def progress_embed(guild, g: dict, member: discord.Member) -> discord.Embed:
         lines.append(f"**Linked channel:** {creator.get('channel')}")
     else:
         lines.append("**Linked channel:** not set — use `.creator link <your channel url>`")
+    month_now = month_key()
+    allowance = g.get("allowances", {}).get(str(uid)) or {}
+    if allowance.get("month") == month_now:
+        state = "paid ✅" if allowance.get("status") == "paid" else "queued for the owner ⏳"
+        lines.append(f"**Monthly gold:** {fmt_int(allowance.get('gold'))} Gold — {state}")
+    else:
+        lines.append(f"**Monthly gold:** {fmt_int(allowance_gold(g))} Gold each month")
     wk = week_key()
     state = g["missions"].get(wk, {}).get(str(uid), {})
     mlines = []
@@ -721,6 +829,99 @@ async def _send(channel, embed=None, view=None, content=None):
     except (discord.Forbidden, discord.HTTPException) as exc:
         print(f"[creator] send failed: {type(exc).__name__}: {exc}")
         return None
+
+
+def owner_ids(guild=None, g: dict | None = None) -> list[int]:
+    """Reward owner: per-guild setting, then env, then bot owners, then server owner."""
+    ids: set[int] = set()
+
+    def _add(raw):
+        for part in str(raw or "").replace(";", ",").split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.add(int(part))
+
+    if g is not None:
+        _add(g["settings"].get("owner_id"))
+    if not ids:
+        _add(os.getenv("CREATOR_OWNER_ID", ""))
+    if not ids:
+        for raw in getattr(bm, "OWNER_IDS", set()) or ():
+            _add(raw)
+    if not ids and guild is not None and getattr(guild, "owner_id", None):
+        ids.add(int(guild.owner_id))
+    return sorted(ids)
+
+
+async def _notify_owner(guild, content: str = "", embed=None, view=None,
+                        channel_key: str = "review_channel"):
+    """Ping the owner(s) where staff will see it; DM them if no channel is set."""
+    g = gdata(guild.id)
+    ids = owner_ids(guild, g)
+    mentions = " ".join(f"<@{uid}>" for uid in ids)
+    text = " ".join(part for part in (mentions, content) if part).strip()
+    allowed = (discord.AllowedMentions(users=[discord.Object(id=uid) for uid in ids])
+               if ids else discord.AllowedMentions.none())
+    channel = await _channel(guild, channel_key) if channel_key else None
+    if channel is not None:
+        try:
+            return await channel.send(content=text or None, embed=embed, view=view,
+                                      allowed_mentions=allowed)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[creator] owner ping failed in #{getattr(channel, 'name', '?')}: "
+                  f"{type(exc).__name__}: {exc}")
+    for uid in ids:
+        member = guild.get_member(uid) if guild is not None else None
+        if member is None:
+            continue
+        try:
+            sent = await member.send(content=content or "Creator reward needs you.", embed=embed)
+            return sent
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+    return None
+
+
+async def notify_allowances(guild, g: dict, records: list[dict]):
+    """One owner message per batch of newly queued monthly allowances."""
+    if not records:
+        return None
+    month = records[0].get("month") or month_key()
+    month_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+    total = sum(int(r.get("gold") or 0) for r in records)
+    lines = [f"<@{r['user_id']}> — **{fmt_int(r.get('gold'))} Gold**" for r in records[:20]]
+    if len(records) > 20:
+        lines.append(f"…and {len(records) - 20} more")
+    em = bm.ui.embed(
+        f"Monthly creator allowance — {month_label}",
+        f"**{len(records)}** creator(s) · **{fmt_int(total)} Gold** total\n\n"
+        + "\n".join(lines),
+        "gold", footer="Wigglesworth • creator rewards • .creator allowance")
+    content = ("Monthly creator gold is ready to deliver. "
+               "Mark it with `.creator allowance paid @user` or `.creator allowance paid all`.")
+    return await _notify_owner(guild, content, embed=em)
+
+
+async def _allowance_tick(bot) -> None:
+    for guild in bot.guilds:
+        g = gdata(guild.id)
+        new = queue_allowances(guild, g)
+        if new:
+            await notify_allowances(guild, g, new)
+
+
+async def _allowance_loop() -> None:
+    # Let the site sync and role cache settle before the first ping.
+    await asyncio.sleep(90)
+    while True:
+        try:
+            if _bot is not None and _bot.is_ready():
+                await _allowance_tick(_bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never let the monthly task die
+            print(f"[creator] allowance check failed: {type(exc).__name__}: {exc}")
+        await asyncio.sleep(6 * 60 * 60)
 
 
 # ---------- review views ----------
@@ -1038,18 +1239,23 @@ async def process_submission(guild, author: discord.Member, url: str,
 
 # ---------- shop / redeeming ----------
 
-def shop_embed() -> discord.Embed:
-    lines = [f"**{item['name']}** — {item['price']} credits\n*{item['desc']}*"
-             for item in REWARD_CATALOG]
+def shop_embed(g: dict | None = None, member=None) -> discord.Embed:
+    lines = []
+    if g is not None and member is not None:
+        lines.append(f"**Your balance:** {fmt_int(credits(g, member.id))} credits\n")
+    for i, item in enumerate(REWARD_CATALOG, 1):
+        lines.append(f"`{i}` **{item['name']}** — {fmt_int(item['price'])} credits\n"
+                     f"*{item['desc']}*")
     em = bm.ui.embed("🛍️ Creator shop", "\n\n".join(lines), "info",
-                     footer="Wigglesworth • creator rewards • .creator redeem <item>")
+                     footer="Wigglesworth • creator rewards • .creator shop")
+    em.add_field(name="How to buy",
+                 value="`.creator buy 1` (or `.creator buy cash`). Credits are taken "
+                       "immediately and the owner is pinged to deliver in-game.",
+                 inline=False)
     odds = " · ".join(f"{p['tier']} {p['chance']}%" for p in WHEEL_PRIZES)
     em.add_field(name="Wheel odds", value=odds + "\nEvery spin is a cosmetic crate.", inline=False)
     em.add_field(name="Double XP weekends",
-                 value="Redeem any time; staff schedules and announces the next weekend.",
-                 inline=False)
-    em.add_field(name="How it works",
-                 value="Redeem with `.creator redeem <id>`. Staff deliver in-game, then mark it fulfilled.",
+                 value="Buy any time; staff schedules and announces the next weekend.",
                  inline=False)
     return em
 
@@ -1070,6 +1276,9 @@ def find_item(key: str) -> dict | None:
     k = (key or "").strip().lower()
     if not k:
         return None
+    if k.isdigit():
+        idx = int(k) - 1
+        return REWARD_CATALOG[idx] if 0 <= idx < len(REWARD_CATALOG) else None
     for item in REWARD_CATALOG:
         if item["id"] == k or item["name"].lower() == k:
             return item
@@ -1086,36 +1295,48 @@ async def redeem(guild, member: discord.Member, key: str) -> dict:
         return {"ok": False, "error": "Unknown reward. Use `.creator shop`."}
     bal = credits(g, member.id)
     if bal < item["price"]:
-        return {"ok": False, "error": f"Not enough credits ({fmt_int(bal)}/{item['price']})."}
+        return {"ok": False, "error": f"Not enough credits ({fmt_int(bal)}/{item['price']}). "
+                                      "Post another video or buy a cheaper reward."}
     for red in g["redemptions"].values():
         if (str(red.get("user_id")) == str(member.id)
                 and red.get("item") == item["id"] and red.get("status") == "requested"):
-            return {"ok": False, "error": "You already have that reward pending."}
+            return {"ok": False, "error": "You already have that reward pending. "
+                                          "Staff will deliver it soon."}
     rid = "RD-" + uuid.uuid4().hex[:6].upper()
+    remaining = add_credits(g, member.id, -item["price"],
+                            f"buy {item['name']} ({rid})")
     red = {"id": rid, "user_id": str(member.id), "item": item["id"],
            "name": item["name"], "price": item["price"], "status": "requested",
+           "remaining_after": remaining, "owner_notified": False,
            "created_at": now_ts(), "created_at_iso": iso_now()}
     if item["id"] == "wheel":
         prize = roll_wheel()
         red["wheel_tier"] = prize["tier"]
         red["wheel_prize"] = prize["label"]
     g["redemptions"][rid] = red
-    add_credits(g, member.id, -item["price"], f"redeem {item['name']} ({rid})")
-    review_ch = await _channel(guild, "review_channel")
-    if review_ch:
-        extra = ""
-        if red.get("wheel_tier"):
-            extra = f"\nWheel roll: **{red['wheel_tier']}** — grant a {red['wheel_prize']}."
-        em = bm.ui.embed(f"🎁 Redemption — {item['name']}",
-                         f"Creator: {member.mention}\nItem: **{item['name']}**\n"
-                         f"Cost: **{item['price']} credits**\nRequest: `{rid}`" + extra,
-                         "warning", footer="Wigglesworth • creator rewards")
-        msg = await _send(review_ch, em, RedeemView())
-        if msg:
-            red["message_id"] = msg.id
-            g.setdefault("by_redeem_message", {})[str(msg.id)] = rid
+
+    extra = ""
+    if red.get("wheel_tier"):
+        extra = f"\nWheel roll: **{red['wheel_tier']}** — grant a {red['wheel_prize']}."
+    em = bm.ui.embed(
+        f"🎁 New purchase — {item['name']}",
+        f"Buyer: {member.mention}\nItem: **{item['name']}**\n"
+        f"Cost: **{fmt_int(item['price'])} credits**\n"
+        f"Balance left: **{fmt_int(remaining)} credits**\n"
+        f"Request: `{rid}`{extra}\n\n"
+        "Deliver it in-game, then press **Delivered**. "
+        "Use **Refund** to return the credits.",
+        "warning", footer="Wigglesworth • creator rewards • owner action")
+    msg = await _notify_owner(
+        guild, f"New creator purchase from {member.mention} needs delivery.",
+        embed=em, view=RedeemView())
+    if msg is not None:
+        red["message_id"] = msg.id
+        red["owner_notified"] = True
+        g.setdefault("by_redeem_message", {})[str(msg.id)] = rid
     save()
-    return {"ok": True, "id": rid, "item": item, "wheel": red.get("wheel_tier")}
+    return {"ok": True, "id": rid, "item": item, "wheel": red.get("wheel_tier"),
+            "balance": remaining, "owner_notified": red["owner_notified"]}
 
 
 def leaderboard_embed(guild, g: dict) -> discord.Embed:
@@ -1206,20 +1427,26 @@ async def _lookup_member_id(guild, username: str) -> str:
 # ---------- command router ----------
 
 HELP = """**Creator commands**
-`.creator progress` — your credits, tier, and weekly missions
+`.creator progress` — your credits, tier, monthly gold, and weekly missions
 `.creator link <channel url>` — link the channel you post on
-`.creator shop` — rewards you can redeem
-`.creator redeem <item>` — spend credits on a reward
+`.creator shop` — rewards and prices
+`.creator buy <1-3>` — spend credits on a reward (owner gets pinged)
 `.creator leaderboard` — top creators this month
 `.creator submit <video link>` — submit without posting in the channel
 
 **Staff**
 `.creator submitchannel #channel` — where creators post videos
-`.creator reviewchannel #channel` — where unclear videos go
+`.creator reviewchannel #channel` — where purchases and unclear videos go
 `.creator approvedchannel #channel` — where approved videos are showcased
-`.creator setrole @role` — which role may submit
+`.creator setrole @role` — which role may submit and gets monthly gold
+`.creator owner @user` — who gets pinged to deliver purchases and gold
 `.creator config` — show the current setup
 `.creator setmin <seconds>` — shortest video that auto-approves (default 10)
+`.creator allowance` — this month's 500 Gold status
+`.creator allowance queue` — queue this month now and ping the owner
+`.creator allowance paid @user` — mark gold delivered (or `paid all`)
+`.creator allowance amount <gold>` — change the monthly amount
+`.creator allowance on|off` — toggle the monthly allowance
 `.creator sync` — pull approved creator channels from the site
 `.creator submissions` — latest submissions
 `.creator approve <id>` — approve and award credits
@@ -1282,19 +1509,33 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         return
 
     if sub == "shop":
-        await ctx.reply(embed=shop_embed(), mention_author=False)
+        await ctx.reply(embed=shop_embed(g, ctx.author), mention_author=False)
         return
 
-    if sub == "redeem":
+    if sub in ("redeem", "buy"):
         if not isinstance(ctx.author, discord.Member):
             return
-        res = await redeem(ctx.guild, ctx.author, rest)
+        if not rest:
+            await ctx.reply("Usage: `.creator buy <number>` — see `.creator shop`.",
+                            mention_author=False)
+            return
+        if not has_creator_role(ctx.author, g) and not is_staff(ctx.author):
+            await ctx.reply("Only Content Creators can buy rewards.", mention_author=False)
+            return
+        res = await redeem(ctx.guild, ctx.author, rest.split()[0])
         if res.get("ok"):
             wheel = f" Wheel rolled: **{res['wheel']}**." if res.get("wheel") else ""
-            await ctx.reply(f"Redeemed **{res['item']['name']}** — request `{res['id']}`.{wheel} "
-                            f"Staff will deliver it in-game.", mention_author=False)
+            ping = ("Owner has been pinged to deliver it."
+                    if res.get("owner_notified") else
+                    "Staff will follow up to deliver it.")
+            await ctx.reply(
+                f"Bought **{res['item']['name']}** for {fmt_int(res['item']['price'])} credits "
+                f"— request `{res['id']}`.{wheel}\n"
+                f"**Balance left:** {fmt_int(res.get('balance'))} credits. {ping}",
+                mention_author=False)
         else:
-            await ctx.reply(res.get("error") or "Could not redeem.", mention_author=False)
+            await ctx.reply(res.get("error") or "Could not buy that reward.",
+                            mention_author=False)
         return
 
     if sub == "leaderboard":
@@ -1337,8 +1578,11 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
             f"**Review:** {_ch('review_channel')}",
             f"**Showcase:** {_ch('approved_channel')}",
             f"**Creator role:** {role.mention if role else '❌ not set'}",
+            f"**Reward owner:** {('<@' + str(s.get('owner_id')) + '>') if s.get('owner_id') else 'OWNER_IDS / server owner'}",
             f"**Minimum length:** {s.get('min_seconds', 10)}s",
             f"**Auto-approve:** {'on' if s.get('auto_approve', True) else 'off'}",
+            f"**Monthly gold:** {fmt_int(allowance_gold(g))} Gold — "
+            f"{'on' if s.get('allowance_enabled', True) else 'off'}",
         ]
         missing = [n for n, k in (("submitchannel", "submissions_channel"),
                                   ("reviewchannel", "review_channel"),
@@ -1363,6 +1607,29 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         await ctx.reply(f"Creator role set to **{role.name}**.", mention_author=False)
         return
 
+    if sub == "owner":
+        if rest.lower() in ("clear", "none", "0"):
+            g["settings"]["owner_id"] = 0
+            save()
+            await ctx.reply("Reward owner cleared — purchases ping OWNER_IDS / the server owner.",
+                            mention_author=False)
+            return
+        member = (ctx.message.mentions[0] if ctx.message and ctx.message.mentions
+                  else None)
+        if member is None and rest.isdigit():
+            member = ctx.guild.get_member(int(rest))
+        if member is None:
+            current = owner_ids(ctx.guild, g)
+            who = ", ".join(f"<@{uid}>" for uid in current) or "not set"
+            await ctx.reply(f"Reward owner: {who}. Set one with `.creator owner @user`.",
+                            mention_author=False)
+            return
+        g["settings"]["owner_id"] = member.id
+        save()
+        await ctx.reply(f"Shop purchases and monthly gold will ping {member.mention}.",
+                        mention_author=False)
+        return
+
     if sub == "setmin":
         if not rest.isdigit():
             await ctx.reply("Usage: `.creator setmin <seconds>` (default 10)", mention_author=False)
@@ -1373,6 +1640,88 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         save()
         await ctx.reply(f"Videos must now be at least **{secs}s** to auto-approve. "
                         "Shorter ones go to staff review.", mention_author=False)
+        return
+
+    if sub in ("allowance", "allowances"):
+        tail = rest.split()
+        action = tail[0].lower() if tail else ""
+        month = month_key()
+        gold = allowance_gold(g)
+        enabled = bool(g["settings"].get("allowance_enabled", True))
+        if action in ("", "status"):
+            records = allowance_month(g, month)
+            pending = [r for r in records if r.get("status") == "pending"]
+            paid = [r for r in records if r.get("status") == "paid"]
+            lines = [
+                f"**Monthly gold:** {fmt_int(gold)} Gold per creator",
+                f"**Status:** {'on ✅' if enabled else 'off ❌'}",
+                f"**{datetime.strptime(month, '%Y-%m').strftime('%B %Y')}:** "
+                f"{len(pending)} pending · {len(paid)} paid",
+            ]
+            if pending:
+                names = ", ".join(f"<@{r['user_id']}>" for r in pending[:15])
+                lines.append(f"**Waiting on owner:** {names}"
+                             + (f" +{len(pending) - 15} more" if len(pending) > 15 else ""))
+            lines.append("Queue with `.creator allowance queue`, then mark with "
+                         "`.creator allowance paid @user` or `paid all`.")
+            em = bm.ui.embed("💰 Monthly creator gold", "\n".join(lines), "gold",
+                             footer=f"Wigglesworth • creator rewards • {BUILD}")
+            await ctx.reply(embed=em, mention_author=False)
+            return
+        if action == "queue":
+            new = queue_allowances(ctx.guild, g, month)
+            if not new:
+                why = "The allowance is off." if not enabled else "Everyone is already queued or paid this month."
+                await ctx.reply(f"Nothing to queue. {why}", mention_author=False)
+                return
+            await notify_allowances(ctx.guild, g, new)
+            await ctx.reply(f"Queued **{len(new)}** creator(s) for {fmt_int(gold)} Gold "
+                            "each and pinged the owner.", mention_author=False)
+            return
+        if action == "paid":
+            if len(tail) > 1 and tail[1].lower() == "all":
+                changed = mark_all_allowances_paid(g, ctx.author.id, month)
+                await ctx.reply(f"Marked **{changed}** allowance(s) paid for this month.",
+                                mention_author=False)
+                return
+            targets = ctx.message.mentions if ctx.message else []
+            if not targets and len(tail) > 1:
+                uid = re.sub(r"\D", "", tail[1])
+                member = ctx.guild.get_member(int(uid)) if uid else None
+                targets = [member] if member else []
+            if not targets:
+                await ctx.reply("Usage: `.creator allowance paid @user` or "
+                                "`.creator allowance paid all`", mention_author=False)
+                return
+            changed = sum(1 for user in targets
+                          if mark_allowance_paid(g, user.id, ctx.author.id, month))
+            await ctx.reply(f"Marked **{changed}** allowance(s) paid.", mention_author=False)
+            return
+        if action == "amount":
+            digits = re.sub(r"\D", "", rest[len(tail[0]):])
+            if not digits:
+                await ctx.reply("Usage: `.creator allowance amount 500`", mention_author=False)
+                return
+            amount = max(0, min(int(digits), 1_000_000))
+            g["settings"]["allowance_gold"] = amount
+            save()
+            await ctx.reply(f"Monthly gold is now **{fmt_int(amount)}**. "
+                            "It applies to the next queued month.", mention_author=False)
+            return
+        if action in ("on", "off"):
+            g["settings"]["allowance_enabled"] = action == "on"
+            save()
+            if action == "on":
+                new = queue_allowances(ctx.guild, g, month)
+                if new:
+                    await notify_allowances(ctx.guild, g, new)
+                    await ctx.reply(f"Monthly gold is **on** — queued {len(new)} creator(s) "
+                                    "and pinged the owner.", mention_author=False)
+                    return
+            await ctx.reply(f"Monthly gold is **{action}**.", mention_author=False)
+            return
+        await ctx.reply("Usage: `.creator allowance [status|queue|paid @user|paid all|"
+                        "amount 500|on|off]`", mention_author=False)
         return
 
     if sub == "sync":
@@ -1451,7 +1800,12 @@ def setup(bot_module) -> None:
     load()
     _bot.add_view(ReviewView())
     _bot.add_view(RedeemView())
-    print(f"[creator] loaded build {BUILD} (10s min, forum posts, config command)")
+    try:
+        if not getattr(_bot, "_creator_allowance_task", None):
+            _bot._creator_allowance_task = asyncio.create_task(_allowance_loop())
+    except RuntimeError:
+        pass
+    print(f"[creator] loaded build {BUILD} (10s min, forum posts, owner pings, monthly gold)")
     b = _bot
 
     async def _router(ctx, *, args: str = ""):

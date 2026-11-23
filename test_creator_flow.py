@@ -259,6 +259,41 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         red_id = res["id"]
         self.assertEqual(g["redemptions"][red_id]["status"], "requested")
         self.assertEqual(g["by_redeem_message"][str(queued[0].id)], red_id)
+        self.assertEqual(g["redemptions"][red_id]["remaining_after"], 250)
+        self.assertTrue(g["redemptions"][red_id]["owner_notified"])
+
+    async def test_purchase_pings_the_owner_with_details(self):
+        self.bm.OWNER_IDS = {self.staff.id}
+        g = creator.gdata(self.guild.id)
+        creator.add_credits(g, self.member.id, 500, "test grant")
+        creator.save()
+        res = await creator.redeem(self.guild, self.member, "1")
+        self.assertTrue(res["ok"])
+        card = self.guild.channels["review"].sent[-1]
+        self.assertIn(f"<@{self.staff.id}>", card.content)
+        self.assertIn(self.member.mention, card.content)
+        self.assertIn("New purchase", card.embed.title)
+        self.assertIn("250 credits", card.embed.description)
+        self.assertIn("Balance left", card.embed.description)
+        self.assertEqual(res["balance"], 250)
+
+    async def test_monthly_allowance_queues_once_and_pings_owner(self):
+        self.bm.OWNER_IDS = {self.staff.id}
+        g = creator.gdata(self.guild.id)
+        creator.add_credits(g, self.member.id, 10, "test")
+        creator.save()
+        first = creator.queue_allowances(self.guild, g, "2026-11")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["user_id"], str(self.member.id))
+        self.assertEqual(first[0]["gold"], 500)
+        await creator.notify_allowances(self.guild, g, first)
+        card = self.guild.channels["review"].sent[-1]
+        self.assertIn(f"<@{self.staff.id}>", card.content)
+        self.assertIn("500 Gold", card.embed.description)
+        self.assertEqual(creator.queue_allowances(self.guild, g, "2026-11"), [])
+        self.assertTrue(creator.mark_allowance_paid(g, self.member.id, by=self.staff.id,
+                                                    month="2026-11"))
+        self.assertEqual(g["allowances"][str(self.member.id)]["status"], "paid")
 
     async def test_progress_and_shop_embeds_render(self):
         g = creator.gdata(self.guild.id)
