@@ -23,7 +23,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 import aiohttp
 import discord
 
-BUILD = "2026-11-23.1"  # bump on every push; printed at startup
+BUILD = "2026-11-23.2"  # bump on every push; printed at startup
 
 bm = None
 _bot = None
@@ -173,6 +173,10 @@ def gdata(guild_id) -> dict:
     g.setdefault("redemptions", {})
     g.setdefault("missions", {})
     g.setdefault("allowances", {})
+    g.setdefault("allowance_history", [])
+    g.setdefault("withdrawals", {})
+    g.setdefault("by_withdraw_message", {})
+    g.setdefault("pending_withdrawals", {})
     for k, v in DEFAULTS.items():
         g["settings"].setdefault(k, v)
     # Older saves were created when the default minimum was 60s, then 15s. Skits and
@@ -767,6 +771,15 @@ def is_staff(member: discord.Member) -> bool:
     return bool(p.administrator or p.manage_guild or p.manage_messages)
 
 
+def can_fulfill(member: discord.Member, guild=None, g: dict | None = None) -> bool:
+    """Staff, bot owners, or the configured reward owner may deliver rewards."""
+    if member is None:
+        return False
+    if is_staff(member):
+        return True
+    return int(getattr(member, "id", 0) or 0) in owner_ids(guild, g)
+
+
 def staff_only():
     async def predicate(ctx):
         if ctx.guild is None:
@@ -875,7 +888,8 @@ async def _notify_owner(guild, content: str = "", embed=None, view=None,
         if member is None:
             continue
         try:
-            sent = await member.send(content=content or "Creator reward needs you.", embed=embed)
+            sent = await member.send(content=content or "Creator reward needs you.",
+                                     embed=embed, view=view)
             return sent
         except (discord.Forbidden, discord.HTTPException):
             continue
@@ -922,6 +936,300 @@ async def _allowance_loop() -> None:
         except Exception as exc:  # never let the monthly task die
             print(f"[creator] allowance check failed: {type(exc).__name__}: {exc}")
         await asyncio.sleep(6 * 60 * 60)
+
+
+# ---------- gold withdrawals ----------
+
+def pending_gold(g: dict, user_id) -> int:
+    """Gold still available this month after reserved/accepted withdrawals."""
+    uid = str(user_id)
+    rec = g.get("allowances", {}).get(uid) or {}
+    if rec.get("month") != month_key() or rec.get("status") == "paid":
+        return 0
+    total = max(0, int(rec.get("gold") or 0))
+    reserved = sum(
+        int(w.get("amount") or 0)
+        for w in g.get("withdrawals", {}).values()
+        if str(w.get("user_id")) == uid
+        and w.get("month") == month_key()
+        and w.get("status") in ("pending", "fulfilled")
+    )
+    return max(0, total - reserved)
+
+
+def find_withdrawal(g: dict, wid: str) -> dict | None:
+    return g.get("withdrawals", {}).get((wid or "").strip().upper())
+
+
+def find_withdrawal_for_message(g: dict, message) -> dict | None:
+    mid = str(getattr(message, "id", "") or "")
+    wid = (g.get("by_withdraw_message") or {}).get(mid)
+    w = g.get("withdrawals", {}).get(wid or "")
+    if w:
+        return w
+    if mid:
+        for cand in g.get("withdrawals", {}).values():
+            if str(cand.get("message_id") or "") == mid:
+                return cand
+    for e in (getattr(message, "embeds", None) or []):
+        for text in (getattr(e, "description", "") or "",
+                     getattr(getattr(e, "footer", None), "text", "") or ""):
+            found = re.search(r"\bGW-[0-9A-F]{6}\b", str(text))
+            if found:
+                return g.get("withdrawals", {}).get(found.group(0))
+    return None
+
+
+def _withdraw_embed(w: dict, title: str, color: str = "gold") -> discord.Embed:
+    return bm.ui.embed(
+        title,
+        f"Creator: <@{w.get('user_id')}>\nAmount: **{fmt_int(w.get('amount'))} Gold**\n"
+        f"Request: `{w.get('id')}`\nStatus: **{w.get('status')}**\n\n"
+        "Deliver the gold in-game, then press **Accept**. "
+        "**Cancel** returns it to the creator's balance. "
+        "**Modify** changes the amount.",
+        color, footer="Wigglesworth • creator rewards • .creator withdraw")
+
+
+async def request_gold_withdrawal(guild, g: dict, member, amount) -> dict:
+    """Reserve part of this month's gold and ping the owner for approval."""
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Amount must be a number."}
+    if amount <= 0:
+        return {"ok": False, "error": "Amount must be greater than 0."}
+    uid = str(getattr(member, "id", "") or "")
+    if not uid or not uid.isdigit():
+        return {"ok": False, "error": "Could not identify the creator."}
+    if not has_creator_role(member, g) and not can_fulfill(member, guild, g):
+        return {"ok": False, "error": "Only Content Creators can withdraw gold."}
+    available = pending_gold(g, uid)
+    if available <= 0:
+        return {"ok": False, "error":
+                "No pending gold this month. Ask staff to queue allowances first."}
+    if amount > available:
+        return {"ok": False, "error":
+                f"You only have **{fmt_int(available)} Gold** available to withdraw."}
+
+    wid = new_id("GW-")
+    w = {"id": wid, "user_id": uid, "amount": amount, "status": "pending",
+         "month": month_key(), "requested_at": iso_now(),
+         "owner_notified": False}
+    g["withdrawals"][wid] = w
+    save()
+
+    mention = getattr(member, "mention", f"<@{uid}>")
+    msg = await _notify_owner(
+        guild,
+        f"{mention} requested a gold withdrawal — {fmt_int(amount)} Gold. "
+        f"Use `.creator withdraw accept {wid}` if buttons do not work.",
+        embed=_withdraw_embed(w, "🪙 Gold withdrawal request"),
+        view=GoldWithdrawalView())
+    if msg is not None:
+        w["message_id"] = msg.id
+        w["owner_notified"] = True
+        g.setdefault("by_withdraw_message", {})[str(msg.id)] = wid
+    save()
+    return {"ok": True, "wid": wid, "amount": amount,
+            "owner_notified": bool(w["owner_notified"])}
+
+
+async def _dm_creator(guild, uid, text: str) -> None:
+    if guild is None:
+        return
+    member = guild.get_member(int(uid)) if str(uid).isdigit() else None
+    if member is None:
+        return
+    try:
+        await member.send(text)
+    except (discord.Forbidden, discord.HTTPException, AttributeError):
+        pass
+
+
+async def fulfill_gold_withdrawal(guild, g: dict, w: dict | None, by=None) -> dict:
+    if not w:
+        return {"ok": False, "error": "Withdrawal not found."}
+    if w.get("status") != "pending":
+        return {"ok": False, "error": f"Already {w.get('status')}."}
+    w["status"] = "fulfilled"
+    w["handled_by"] = str(getattr(by, "id", by) or "")
+    w["handled_at"] = iso_now()
+    save()
+    if pending_gold(g, w.get("user_id")) == 0:
+        mark_allowance_paid(g, w.get("user_id"), by=w["handled_by"])
+    await _dm_creator(guild, w.get("user_id"),
+                      f"Your **{fmt_int(w.get('amount'))} Gold** withdrawal was accepted "
+                      f"and delivered in-game. (Request `{w.get('id')}`)")
+    return {"ok": True, "withdrawal": w}
+
+
+async def cancel_gold_withdrawal(guild, g: dict, w: dict | None, by=None) -> dict:
+    if not w:
+        return {"ok": False, "error": "Withdrawal not found."}
+    if w.get("status") != "pending":
+        return {"ok": False, "error": f"Already {w.get('status')}."}
+    w["status"] = "cancelled"
+    w["handled_by"] = str(getattr(by, "id", by) or "")
+    w["handled_at"] = iso_now()
+    save()
+    await _dm_creator(guild, w.get("user_id"),
+                      f"Your gold withdrawal `{w.get('id')}` was cancelled. "
+                      f"The gold is available to request again.")
+    return {"ok": True, "withdrawal": w}
+
+
+async def modify_gold_withdrawal(guild, g: dict, w: dict | None, amount, by=None) -> dict:
+    if not w:
+        return {"ok": False, "error": "Withdrawal not found."}
+    if w.get("status") != "pending":
+        return {"ok": False, "error": f"Already {w.get('status')}."}
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Amount must be a number."}
+    if amount <= 0:
+        return {"ok": False, "error": "Amount must be greater than 0."}
+    other = sum(
+        int(x.get("amount") or 0)
+        for x in g.get("withdrawals", {}).values()
+        if x is not w and str(x.get("user_id")) == str(w.get("user_id"))
+        and x.get("month") == w.get("month")
+        and x.get("status") in ("pending", "fulfilled")
+    )
+    rec = g.get("allowances", {}).get(str(w.get("user_id"))) or {}
+    cap = max(0, int(rec.get("gold") or 0) - other)
+    if amount > cap:
+        return {"ok": False, "error": f"Maximum for this creator is **{fmt_int(cap)} Gold**."}
+    w["amount"] = amount
+    w["modified_by"] = str(getattr(by, "id", by) or "")
+    w["modified_at"] = iso_now()
+    save()
+    await _dm_creator(guild, w.get("user_id"),
+                      f"Your gold withdrawal `{w.get('id')}` was updated to "
+                      f"**{fmt_int(amount)} Gold**.")
+    return {"ok": True, "withdrawal": w}
+
+
+class GoldWithdrawalView(discord.ui.View):
+    """Owner controls on the withdrawal card posted to #creator-review."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    async def _guard(self, interaction) -> tuple[dict | None, bool]:
+        g = gdata(interaction.guild_id)
+        if not can_fulfill(interaction.user, interaction.guild, g):
+            await interaction.response.send_message(
+                "Only staff or the reward owner can do that.", ephemeral=True)
+            return g, False
+        w = find_withdrawal_for_message(g, interaction.message)
+        if not w:
+            await interaction.response.send_message(
+                "Withdrawal not found. Use `.creator withdraw list`.", ephemeral=True)
+            return g, False
+        if w.get("status") != "pending":
+            await interaction.response.send_message(
+                f"Already **{w.get('status')}**.", ephemeral=True)
+            return g, False
+        return g, True
+
+    async def _close_card(self, interaction) -> None:
+        try:
+            await interaction.message.edit(view=None)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success,
+                       custom_id="creator:withdraw:accept")
+    async def accept_btn(self, interaction: discord.Interaction, _):
+        g, ok = await self._guard(interaction)
+        if not ok:
+            return
+        await interaction.response.defer(ephemeral=True)
+        w = find_withdrawal_for_message(g, interaction.message)
+        res = await fulfill_gold_withdrawal(interaction.guild, g, w, interaction.user)
+        if not res.get("ok"):
+            await interaction.followup.send(res["error"], ephemeral=True)
+            return
+        await self._close_card(interaction)
+        await interaction.followup.send(f"Accepted `{w['id']}` ✅", ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger,
+                       custom_id="creator:withdraw:cancel")
+    async def cancel_btn(self, interaction: discord.Interaction, _):
+        g, ok = await self._guard(interaction)
+        if not ok:
+            return
+        await interaction.response.defer(ephemeral=True)
+        w = find_withdrawal_for_message(g, interaction.message)
+        res = await cancel_gold_withdrawal(interaction.guild, g, w, interaction.user)
+        if not res.get("ok"):
+            await interaction.followup.send(res["error"], ephemeral=True)
+            return
+        await self._close_card(interaction)
+        await interaction.followup.send(f"Cancelled `{w['id']}`", ephemeral=True)
+
+    @discord.ui.button(label="Modify", style=discord.ButtonStyle.secondary,
+                       custom_id="creator:withdraw:modify")
+    async def modify_btn(self, interaction: discord.Interaction, _):
+        g, ok = await self._guard(interaction)
+        if not ok:
+            return
+        w = find_withdrawal_for_message(g, interaction.message)
+        await interaction.response.send_message(
+            f"Change the amount with:\n"
+            f"`.creator withdraw modify {w['id']} <new amount>`", ephemeral=True)
+
+
+class WithdrawConfirmView(discord.ui.View):
+    """Two-step confirm so a stray number can't submit a gold request."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=300)
+
+    def _pending(self, interaction) -> dict | None:
+        g = gdata(interaction.guild_id)
+        return (g.get("pending_withdrawals") or {}).get(str(interaction.user.id))
+
+    @discord.ui.button(label="Confirm withdrawal", style=discord.ButtonStyle.success,
+                       custom_id="creator:withdraw:confirm")
+    async def confirm_btn(self, interaction: discord.Interaction, _):
+        uid = str(interaction.user.id)
+        g = gdata(interaction.guild_id)
+        pending = (g.get("pending_withdrawals") or {}).get(uid)
+        if not pending or now_ts() - float(pending.get("at") or 0) > 300:
+            g.get("pending_withdrawals", {}).pop(uid, None)
+            await interaction.response.send_message(
+                "That confirmation expired. Run `.creator withdrawgold <amount>` again.",
+                ephemeral=True)
+            return
+        g["pending_withdrawals"].pop(uid, None)
+        save()
+        res = await request_gold_withdrawal(interaction.guild, g, interaction.user,
+                                            pending.get("amount"))
+        await interaction.response.send_message(
+            (f"Submitted `{res['wid']}` for **{fmt_int(res['amount'])} Gold**. "
+             "The owner will review it."
+             if res.get("ok") else res.get("error") or "Could not submit that request."),
+            ephemeral=True)
+        try:
+            await interaction.message.edit(view=None)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary,
+                       custom_id="creator:withdraw:deny")
+    async def cancel_btn(self, interaction: discord.Interaction, _):
+        uid = str(interaction.user.id)
+        g = gdata(interaction.guild_id)
+        g.get("pending_withdrawals", {}).pop(uid, None)
+        save()
+        await interaction.response.send_message("Withdrawal cancelled.", ephemeral=True)
+        try:
+            await interaction.message.edit(view=None)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 
 # ---------- review views ----------
@@ -1022,46 +1330,72 @@ class ReviewView(discord.ui.View):
         await self._decide(interaction, False)
 
 
+def find_redemption_for_message(g: dict, message) -> dict | None:
+    """Locate the order a delivery card belongs to, even after a bot restart.
+
+    Older cards only had a ``by_redeem_message`` entry; newer ones also store
+    ``message_id`` on the redemption and print the request id in the embed.
+    Try all three so the Fulfilled / Refund buttons never dead-end.
+    """
+    mid = str(getattr(message, "id", "") or "")
+    rid = (g.get("by_redeem_message") or {}).get(mid)
+    red = g.get("redemptions", {}).get(rid or "")
+    if red:
+        return red
+    if mid:
+        for cand in g.get("redemptions", {}).values():
+            if str(cand.get("message_id") or "") == mid:
+                return cand
+    text = " ".join(str(getattr(e, "description", "") or "")
+                    for e in (getattr(message, "embeds", None) or []))
+    found = re.search(r"\bRD-[0-9A-F]{6}\b", text)
+    if found:
+        return g.get("redemptions", {}).get(found.group(0))
+    # Footer carries the request id on some older cards.
+    for e in (getattr(message, "embeds", None) or []):
+        footer = getattr(getattr(e, "footer", None), "text", "") or ""
+        found = re.search(r"\bRD-[0-9A-F]{6}\b", str(footer))
+        if found:
+            return g.get("redemptions", {}).get(found.group(0))
+    return None
+
+
 class RedeemView(discord.ui.View):
+    """Staff view for fulfilling/refunding a shop purchase delivery card."""
+
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
     async def _finish(self, interaction: discord.Interaction, fulfill: bool):
-        if not isinstance(interaction.user, discord.Member) or not is_staff(interaction.user):
-            await interaction.response.send_message("Staff only.", ephemeral=True)
-            return
         g = gdata(interaction.guild_id)
-        rid = (g.get("by_redeem_message") or {}).get(str(interaction.message.id))
-        red = g["redemptions"].get(rid or "")
+        if not can_fulfill(interaction.user, interaction.guild, g):
+            await interaction.response.send_message(
+                "Only staff or the reward owner can do that.", ephemeral=True)
+            return
+        red = find_redemption_for_message(g, interaction.message)
         if not red:
-            await interaction.response.send_message("Redemption not found.", ephemeral=True)
+            await interaction.response.send_message(
+                "Order not found. Use `.creator orders` then "
+                "`.creator deliver <id>` / `.creator refund <id>`.", ephemeral=True)
             return
         if red.get("status") != "requested":
-            await interaction.response.send_message("Already handled.", ephemeral=True)
+            await interaction.response.send_message(
+                f"Already **{red.get('status')}**.", ephemeral=True)
             return
-        await interaction.response.defer()
-        if fulfill:
-            res = await fulfill_redemption(interaction.guild, g, red, interaction.user)
-            if not res.get("ok"):
-                await interaction.followup.send(res.get("error") or "Could not fulfill.",
-                                                ephemeral=True)
-                return
-            try:
-                await interaction.message.edit(view=None)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-            await interaction.followup.send(f"Fulfilled `{red['id']}` ✅", ephemeral=True)
-        else:
-            res = await refund_redemption(interaction.guild, g, red, interaction.user)
-            if not res.get("ok"):
-                await interaction.followup.send(res.get("error") or "Could not refund.",
-                                                ephemeral=True)
-                return
-            try:
-                await interaction.message.edit(view=None)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-            await interaction.followup.send(f"Refunded `{red['id']}`", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        res = (await fulfill_redemption(interaction.guild, g, red, interaction.user)
+               if fulfill else
+               await refund_redemption(interaction.guild, g, red, interaction.user))
+        if not res.get("ok"):
+            await interaction.followup.send(res.get("error") or "Could not update the order.",
+                                            ephemeral=True)
+            return
+        try:
+            await interaction.message.edit(view=None)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        await interaction.followup.send(
+            f"{'Fulfilled ✅' if fulfill else 'Refunded'} `{red['id']}`", ephemeral=True)
 
     @discord.ui.button(label="Fulfilled", style=discord.ButtonStyle.success, custom_id="creator:redeem:done")
     async def done_btn(self, interaction: discord.Interaction, _):
@@ -1104,12 +1438,11 @@ class ShopBuyView(discord.ui.View):
         await self._buy_item(interaction, "doublexp")
 
     async def _buy_item(self, interaction: discord.Interaction, key: str) -> None:
-        from creator import gdata, find_item, credits, add_credits, fmt_int, _notify_owner, WHEEL_PRIZES, random, time, iso_now
-
         g = gdata(interaction.guild_id)
-        member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        if member is None:
-            await interaction.response.send_message("This can only be used by server members.", ephemeral=True)
+        member = interaction.user
+        if member is None or not hasattr(member, "id") or getattr(member, "bot", False):
+            await interaction.response.send_message(
+                "This can only be used by server members.", ephemeral=True)
             return
 
         item = find_item(key)
@@ -1123,26 +1456,17 @@ class ShopBuyView(discord.ui.View):
                 f"Not enough credits ({fmt_int(bal)}/{item['price']}).", ephemeral=True)
             return
 
-        # Deduct credits
-        remaining = add_credits(g, member.id, -item["price"], f"buy {item['name']} ({uuid.uuid4().hex[:6].upper()})")
-
-        # Create redemption record
-        rid = "RD-" + uuid.uuid4().hex[:6].upper()
+        rid = new_id("RD-")
+        remaining = add_credits(g, member.id, -item["price"],
+                                f"buy {item['name']} ({rid})")
         red = {"id": rid, "user_id": str(member.id), "item": item["id"],
                "name": item["name"], "price": item["price"], "status": "requested",
                "remaining_after": remaining, "owner_notified": False,
-               "created_at": time.time(), "created_at_iso": iso_now()}
+               "created_at": now_ts(), "created_at_iso": iso_now()}
         if item["id"] == "wheel":
-            roll = random.uniform(0, 100)
-            upto = 0
-            for prize in WHEEL_PRIZES:
-                upto += prize["chance"]
-                if roll < upto:
-                    tier = prize["tier"]
-                    label = prize["label"]
-                    break
-            red["wheel_tier"] = tier
-            red["wheel_prize"] = label
+            prize = roll_wheel()
+            red["wheel_tier"] = prize["tier"]
+            red["wheel_prize"] = prize["label"]
         g["redemptions"][rid] = red
 
         # Build delivery embed for the owner
@@ -1160,12 +1484,18 @@ class ShopBuyView(discord.ui.View):
             "Use **Refund** to return the credits.",
             "warning", footer="Wigglesworth • creator rewards • owner action")
 
-        # Ping the owner
-        await _notify_owner(
+        # Ping the owner and remember which card belongs to which order. Without
+        # this mapping the Delivered/Refund buttons report "Redemption not found".
+        msg = await _notify_owner(
             interaction.guild,
             f"New creator purchase from {member.mention} needs delivery.",
             embed=em,
             view=RedeemView())
+        if msg is not None:
+            red["message_id"] = msg.id
+            red["owner_notified"] = True
+            g.setdefault("by_redeem_message", {})[str(msg.id)] = rid
+        save()
 
         # Confirm to the buyer in the channel (visible to all)
         await interaction.response.send_message(
@@ -1569,8 +1899,9 @@ async def _lookup_member_id(guild, username: str) -> str:
 HELP = """**Creator commands**
 `.creator progress` — your credits, tier, monthly gold, and weekly missions
 `.creator link <channel url>` — link the channel you post on
-`.creator shop` — rewards and prices
+`.creator shop` — rewards and prices (Buy buttons work too)
 `.creator buy <1-3>` — spend credits on a reward (owner gets pinged)
+`.creator withdrawgold <amount>` — request your monthly gold (needs confirmation)
 `.creator leaderboard` — top creators this month
 `.creator submit <video link>` — submit without posting in the channel
 
@@ -1588,6 +1919,10 @@ HELP = """**Creator commands**
 `.creator allowance amount <gold>` — change the monthly amount
 `.creator allowance on|off` — toggle the monthly allowance
 `.creator orders` — pending and recent shop purchases
+`.creator withdraw list` — gold withdrawal requests
+`.creator withdraw accept <id>` — accept a gold withdrawal
+`.creator withdraw cancel <id>` — cancel a gold withdrawal
+`.creator withdraw modify <id> <amount>` — change a gold withdrawal
 `.creator deliver <id>` — mark a purchase delivered
 `.creator refund <id>` — refund a purchase and return credits
 `.creator sync` — pull approved creator channels from the site
@@ -1657,32 +1992,85 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
 
     if sub == "withdrawgold":
         if not rest:
-            await ctx.reply("Usage: `.creator withdrawgold <amount>` — request to withdraw your monthly gold allowance.", mention_author=False)
+            await ctx.reply(
+                "Usage: `.creator withdrawgold <amount>` — request to withdraw "
+                "your monthly gold allowance.", mention_author=False)
             return
         try:
-            amount = int(rest)
+            amount = int(rest.split()[0])
         except ValueError:
             await ctx.reply("Amount must be a number.", mention_author=False)
             return
         if amount <= 0:
             await ctx.reply("Amount must be greater than 0.", mention_author=False)
             return
-        # Double confirmation
-        await ctx.reply(
-            f"Are you sure you want to withdraw **{fmt_int(amount)} Gold**? "
-            f"This will reduce your pending monthly allowance. React with ✅ to confirm or ❌ to cancel.",
-            mention_author=False)
-        # We can't easily add reactions here in a simple way,
-        # so instead we'll just proceed and let the owner handle it.
-        # Actually, let me simplify: just request the withdrawal directly.
-        # The double confirmation will be handled by the owner buttons.
-        res = await request_gold_withdrawal(ctx.guild, g, ctx.author, amount)
-        if res.get("ok"):
+        available = pending_gold(g, ctx.author.id)
+        if available <= 0:
             await ctx.reply(
-                f"Gold withdrawal request **{res['wid']}** for {fmt_int(res['amount'])} Gold has been submitted. "
-                f"The owner will be pinged and can accept/cancel via buttons in `#creator-review`. "
-                f"Use `.creator allowance` to check your pending gold.",
+                "You have no pending gold this month. Ask staff to queue allowances.",
                 mention_author=False)
+            return
+        if amount > available:
+            await ctx.reply(
+                f"You only have **{fmt_int(available)} Gold** available to withdraw.",
+                mention_author=False)
+            return
+        g.setdefault("pending_withdrawals", {})[str(ctx.author.id)] = {
+            "amount": amount, "at": now_ts()}
+        save()
+        await ctx.reply(
+            f"Confirm: withdraw **{fmt_int(amount)} Gold** from your pending allowance? "
+            "The owner must still accept the request before anything is delivered.",
+            view=WithdrawConfirmView(), mention_author=False)
+        return
+
+    if sub == "withdraw":
+        if not can_fulfill(ctx.author, ctx.guild, g):
+            await ctx.reply("Only staff or the reward owner can manage withdrawals.",
+                            mention_author=False)
+            return
+        action = parts[1].lower() if len(parts) > 1 else "list"
+        if action == "list":
+            rows = sorted(g.get("withdrawals", {}).values(),
+                          key=lambda w: w.get("requested_at") or "", reverse=True)[:10]
+            if not rows:
+                await ctx.reply("No gold withdrawal requests yet.", mention_author=False)
+                return
+            lines = [f"`{w.get('id')}` <@{w.get('user_id')}> — "
+                     f"**{fmt_int(w.get('amount'))} Gold** — {w.get('status')}"
+                     for w in rows]
+            em = bm.ui.embed("🪙 Gold withdrawal requests", "\n".join(lines), "info",
+                             footer="Wigglesworth • creator rewards • .creator withdraw")
+            await ctx.reply(embed=em, mention_author=False)
+            return
+        wid = parts[2].upper() if len(parts) > 2 else ""
+        w = find_withdrawal(g, wid)
+        if w is None:
+            await ctx.reply("Unknown request id. Use `.creator withdraw list`.",
+                            mention_author=False)
+            return
+        if action == "accept":
+            res = await fulfill_gold_withdrawal(ctx.guild, g, w, ctx.author)
+        elif action == "cancel":
+            res = await cancel_gold_withdrawal(ctx.guild, g, w, ctx.author)
+        elif action == "modify":
+            try:
+                new_amount = int(parts[3])
+            except (IndexError, ValueError):
+                await ctx.reply("Usage: `.creator withdraw modify <id> <amount>`",
+                                mention_author=False)
+                return
+            res = await modify_gold_withdrawal(ctx.guild, g, w, new_amount, ctx.author)
+        else:
+            await ctx.reply("Use `list`, `accept <id>`, `cancel <id>` or "
+                            "`modify <id> <amount>`.", mention_author=False)
+            return
+        verb = {"accept": "Accepted", "cancel": "Cancelled",
+                "modify": "Modified"}.get(action, action.title())
+        await ctx.reply(res.get("error") or
+                        f"{verb} `{wid}` — "
+                        f"**{fmt_int(w.get('amount'))} Gold**.",
+                        mention_author=False)
         return
 
     if sub in ("redeem", "buy"):
@@ -2008,12 +2396,14 @@ def setup(bot_module) -> None:
     load()
     _bot.add_view(ReviewView())
     _bot.add_view(RedeemView())
+    _bot.add_view(ShopBuyView())
+    _bot.add_view(GoldWithdrawalView())
     try:
         if not getattr(_bot, "_creator_allowance_task", None):
             _bot._creator_allowance_task = asyncio.create_task(_allowance_loop())
     except RuntimeError:
         pass
-    print(f"[creator] loaded build {BUILD} (10s min, forum posts, owner pings, monthly gold)")
+    print(f"[creator] loaded build {BUILD} (shop buttons, owner pings, monthly gold, withdrawals)")
     b = _bot
 
     async def _router(ctx, *, args: str = ""):
