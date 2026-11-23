@@ -926,6 +926,48 @@ async def _allowance_loop() -> None:
 
 # ---------- review views ----------
 
+def find_redemption(g: dict, rid: str) -> dict | None:
+    return g.get("redemptions", {}).get((rid or "").strip().upper())
+
+
+async def fulfill_redemption(guild, g: dict, red: dict | None, by=None) -> dict:
+    if not red:
+        return {"ok": False, "error": "Redemption not found."}
+    if red.get("status") != "requested":
+        return {"ok": False, "error": f"Already {red.get('status')}."}
+    red["status"] = "fulfilled"
+    red["fulfilled_by"] = str(getattr(by, "id", by) or "")
+    red["fulfilled_at"] = iso_now()
+    save()
+    user = None
+    if guild is not None:
+        try:
+            user = guild.get_member(int(red.get("user_id") or 0))
+        except (TypeError, ValueError):
+            user = None
+    if user is not None:
+        try:
+            await user.send(f"Your reward **{red.get('name')}** was delivered. "
+                            f"Check in-game. (Request `{red.get('id')}`)")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    return {"ok": True, "redemption": red}
+
+
+async def refund_redemption(guild, g: dict, red: dict | None, by=None) -> dict:
+    if not red:
+        return {"ok": False, "error": "Redemption not found."}
+    if red.get("status") != "requested":
+        return {"ok": False, "error": f"Already {red.get('status')}."}
+    red["status"] = "refunded"
+    red["refunded_by"] = str(getattr(by, "id", by) or "")
+    red["refunded_at"] = iso_now()
+    balance = add_credits(g, red.get("user_id"), int(red.get("price") or 0),
+                          f"refund {red.get('name')} ({red.get('id')})", by=by)
+    save()
+    return {"ok": True, "balance": balance, "redemption": red}
+
+
 class ReviewView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -999,31 +1041,27 @@ class RedeemView(discord.ui.View):
             return
         await interaction.response.defer()
         if fulfill:
-            red["status"] = "fulfilled"
-            red["fulfilled_by"] = str(interaction.user.id)
-            red["fulfilled_at"] = iso_now()
+            res = await fulfill_redemption(interaction.guild, g, red, interaction.user)
+            if not res.get("ok"):
+                await interaction.followup.send(res.get("error") or "Could not fulfill.",
+                                                ephemeral=True)
+                return
             try:
                 await interaction.message.edit(view=None)
             except (discord.Forbidden, discord.HTTPException):
                 pass
-            user = interaction.guild.get_member(int(red["user_id"]))
-            if user:
-                try:
-                    await user.send(f"Your reward **{red.get('name')}** was delivered. "
-                                    f"Check in-game. (Request `{red.get('id')}`)")
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
             await interaction.followup.send(f"Fulfilled `{red['id']}` ✅", ephemeral=True)
         else:
-            red["status"] = "refunded"
-            add_credits(g, red["user_id"], int(red.get("price") or 0),
-                        f"refund {red.get('name')} ({red.get('id')})", by=interaction.user.id)
+            res = await refund_redemption(interaction.guild, g, red, interaction.user)
+            if not res.get("ok"):
+                await interaction.followup.send(res.get("error") or "Could not refund.",
+                                                ephemeral=True)
+                return
             try:
                 await interaction.message.edit(view=None)
             except (discord.Forbidden, discord.HTTPException):
                 pass
             await interaction.followup.send(f"Refunded `{red['id']}`", ephemeral=True)
-        save()
 
     @discord.ui.button(label="Fulfilled", style=discord.ButtonStyle.success, custom_id="creator:redeem:done")
     async def done_btn(self, interaction: discord.Interaction, _):
@@ -1447,6 +1485,9 @@ HELP = """**Creator commands**
 `.creator allowance paid @user` — mark gold delivered (or `paid all`)
 `.creator allowance amount <gold>` — change the monthly amount
 `.creator allowance on|off` — toggle the monthly allowance
+`.creator orders` — pending and recent shop purchases
+`.creator deliver <id>` — mark a purchase delivered
+`.creator refund <id>` — refund a purchase and return credits
 `.creator sync` — pull approved creator channels from the site
 `.creator submissions` — latest submissions
 `.creator approve <id>` — approve and award credits
@@ -1722,6 +1763,41 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
             return
         await ctx.reply("Usage: `.creator allowance [status|queue|paid @user|paid all|"
                         "amount 500|on|off]`", mention_author=False)
+        return
+
+    if sub in ("orders", "purchases"):
+        rows = sorted(g["redemptions"].values(),
+                      key=lambda r: r.get("created_at") or 0, reverse=True)[:10]
+        if not rows:
+            await ctx.reply("No shop purchases yet.", mention_author=False)
+            return
+        lines = [f"`{r.get('id')}` <@{r.get('user_id')}> — **{r.get('name')}** — "
+                 f"{r.get('status')} — {fmt_int(r.get('price'))} credits"
+                 for r in rows]
+        em = bm.ui.embed("🛍️ Creator orders", "\n".join(lines), "info",
+                         footer="Wigglesworth • creator rewards • .creator orders")
+        await ctx.reply(embed=em, mention_author=False)
+        return
+
+    if sub in ("deliver", "refund"):
+        rid = rest.split()[0].upper() if rest else ""
+        red = find_redemption(g, rid)
+        if red is None:
+            await ctx.reply("Unknown order id. Use `.creator orders`.", mention_author=False)
+            return
+        if sub == "deliver":
+            res = await fulfill_redemption(ctx.guild, g, red, ctx.author)
+        else:
+            res = await refund_redemption(ctx.guild, g, red, ctx.author)
+        if res.get("ok"):
+            if sub == "deliver":
+                await ctx.reply(f"Delivered `{rid}` ✅", mention_author=False)
+            else:
+                await ctx.reply(f"Refunded `{rid}` — buyer now has "
+                                f"{fmt_int(res.get('balance'))} credits.", mention_author=False)
+        else:
+            await ctx.reply(res.get("error") or "Could not update the order.",
+                            mention_author=False)
         return
 
     if sub == "sync":

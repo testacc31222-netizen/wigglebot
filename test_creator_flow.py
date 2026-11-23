@@ -277,6 +277,25 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Balance left", card.embed.description)
         self.assertEqual(res["balance"], 250)
 
+    async def test_orders_can_be_delivered_or_refunded_without_buttons(self):
+        g = creator.gdata(self.guild.id)
+        creator.add_credits(g, self.member.id, 500, "test grant")
+        creator.save()
+        first = await creator.redeem(self.guild, self.member, "cash")
+        red = creator.find_redemption(g, first["id"])
+        done = await creator.fulfill_redemption(self.guild, g, red, self.staff)
+        self.assertTrue(done["ok"])
+        self.assertEqual(red["status"], "fulfilled")
+        again = await creator.fulfill_redemption(self.guild, g, red, self.staff)
+        self.assertFalse(again["ok"])
+
+        second = await creator.redeem(self.guild, self.member, "cash")
+        red2 = creator.find_redemption(g, second["id"])
+        back = await creator.refund_redemption(self.guild, g, red2, self.staff)
+        self.assertTrue(back["ok"])
+        self.assertEqual(red2["status"], "refunded")
+        self.assertEqual(creator.credits(g, self.member.id), 250)
+
     async def test_monthly_allowance_queues_once_and_pings_owner(self):
         self.bm.OWNER_IDS = {self.staff.id}
         g = creator.gdata(self.guild.id)
