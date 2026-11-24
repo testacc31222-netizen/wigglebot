@@ -164,5 +164,74 @@ class ButtonFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(g["withdrawals"], {})
 
 
+class ContextTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        creator.DATA_FILE = Path(self.tmp.name) / "creator.json"
+        creator.DATA = {}
+        self.bm = SimpleNamespace(DATA_DIR=Path(self.tmp.name), ui=ui,
+                                  OWNER_IDS=set(), PREFIX=".")
+        creator.bm = self.bm
+        self.guild = FakeGuild()
+        self.member = FakeMember(7, "VidMaker")
+        self.member.guild = self.guild
+        self.guild.members = {7: self.member}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    async def test_allowance_is_available_to_creators(self):
+        ctx = SimpleNamespace(guild=self.guild, author=self.member,
+                              message=SimpleNamespace(mentions=[]), replies=[])
+
+        async def reply(text=None, embed=None, view=None, mention_author=False):
+            ctx.replies.append((text, embed, view))
+        ctx.reply = reply
+        await creator.cmd_creator(ctx, args="allowance")
+        self.assertTrue(ctx.replies)
+        self.assertNotIn("Staff only", str(ctx.replies[-1][1].description))
+        self.assertIn("Available to withdraw", ctx.replies[-1][1].description)
+
+
+class CreatorControlTests(ButtonFlowTests):
+    async def test_creator_can_change_amount_until_owner_accepts(self):
+        g = creator.gdata(self.guild.id)
+        creator.add_credits(g, self.member.id, 10, "test")
+        creator.save()
+        creator.queue_allowances(self.guild, g)
+
+        res = await creator.request_gold_withdrawal(
+            self.guild, g, self.member, 500)
+        w = creator.find_withdrawal(g, res["wid"])
+
+        changed = await creator.modify_gold_withdrawal(
+            self.guild, g, w, 250, self.member)
+        self.assertTrue(changed["ok"])
+        self.assertEqual(w["amount"], 250)
+        self.assertEqual(creator.pending_gold(g, self.member.id), 250)
+
+        done = await creator.fulfill_gold_withdrawal(
+            self.guild, g, w, self.staff)
+        self.assertTrue(done["ok"])
+        self.assertEqual(w["deducted_amount"], 250)
+        self.assertEqual(creator.deducted_gold(g, self.member.id), 250)
+        self.assertEqual(creator.pending_gold(g, self.member.id), 250)
+        self.assertIn("250 Gold", self.member.dms[-1])
+
+    async def test_creator_can_cancel_their_own_request(self):
+        g = creator.gdata(self.guild.id)
+        creator.add_credits(g, self.member.id, 10, "test")
+        creator.save()
+        creator.queue_allowances(self.guild, g)
+        res = await creator.request_gold_withdrawal(
+            self.guild, g, self.member, 500)
+        w = creator.find_withdrawal(g, res["wid"])
+        cancelled = await creator.cancel_gold_withdrawal(
+            self.guild, g, w, self.member)
+        self.assertTrue(cancelled["ok"])
+        self.assertEqual(w["status"], "cancelled")
+        self.assertEqual(creator.pending_gold(g, self.member.id), 500)
+
+
 if __name__ == "__main__":
     unittest.main()

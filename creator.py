@@ -23,7 +23,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 import aiohttp
 import discord
 
-BUILD = "2026-11-23.2"  # bump on every push; printed at startup
+BUILD = "2026-11-23.3"  # bump on every push; printed at startup
 
 bm = None
 _bot = None
@@ -681,6 +681,8 @@ def progress_embed(guild, g: dict, member: discord.Member) -> discord.Embed:
     if allowance.get("month") == month_now:
         state = "paid ✅" if allowance.get("status") == "paid" else "queued for the owner ⏳"
         lines.append(f"**Monthly gold:** {fmt_int(allowance.get('gold'))} Gold — {state}")
+        lines.append(f"**Gold available:** {fmt_int(pending_gold(g, uid))} · "
+                     f"**Deducted:** {fmt_int(deducted_gold(g, uid))}")
     else:
         lines.append(f"**Monthly gold:** {fmt_int(allowance_gold(g))} Gold each month")
     wk = week_key()
@@ -940,21 +942,47 @@ async def _allowance_loop() -> None:
 
 # ---------- gold withdrawals ----------
 
+def withdrawals_for(g: dict, user_id, month: str | None = None) -> list[dict]:
+    """A creator's withdrawal requests, newest first."""
+    month = month or month_key()
+    rows = [w for w in g.get("withdrawals", {}).values()
+            if str(w.get("user_id")) == str(user_id) and w.get("month") == month]
+    return sorted(rows, key=lambda w: w.get("requested_at") or "", reverse=True)
+
+
+def latest_pending_withdrawal(g: dict, user_id) -> dict | None:
+    for w in withdrawals_for(g, user_id):
+        if w.get("status") == "pending":
+            return w
+    return None
+
+
 def pending_gold(g: dict, user_id) -> int:
-    """Gold still available this month after reserved/accepted withdrawals."""
+    """Gold still available this month after pending and accepted withdrawals."""
     uid = str(user_id)
     rec = g.get("allowances", {}).get(uid) or {}
     if rec.get("month") != month_key() or rec.get("status") == "paid":
         return 0
     total = max(0, int(rec.get("gold") or 0))
     reserved = sum(
-        int(w.get("amount") or 0)
+        int(w.get("deducted_amount") or w.get("amount") or 0)
+        if w.get("status") == "fulfilled" else int(w.get("amount") or 0)
         for w in g.get("withdrawals", {}).values()
         if str(w.get("user_id")) == uid
         and w.get("month") == month_key()
         and w.get("status") in ("pending", "fulfilled")
     )
     return max(0, total - reserved)
+
+
+def deducted_gold(g: dict, user_id) -> int:
+    """Gold already deducted in Discord for the amount received in-game."""
+    uid = str(user_id)
+    return sum(int(w.get("deducted_amount") or 0)
+               for w in g.get("withdrawals", {}).values()
+               if str(w.get("user_id")) == uid
+               and w.get("month") == month_key()
+               and w.get("status") == "fulfilled")
 
 
 def find_withdrawal(g: dict, wid: str) -> dict | None:
@@ -986,9 +1014,19 @@ def _withdraw_embed(w: dict, title: str, color: str = "gold") -> discord.Embed:
         f"Creator: <@{w.get('user_id')}>\nAmount: **{fmt_int(w.get('amount'))} Gold**\n"
         f"Request: `{w.get('id')}`\nStatus: **{w.get('status')}**\n\n"
         "Deliver the gold in-game, then press **Accept**. "
-        "**Cancel** returns it to the creator's balance. "
+        "**Deny** returns it to the creator's balance. "
         "**Modify** changes the amount.",
         color, footer="Wigglesworth • creator rewards • .creator withdraw")
+
+
+def _creator_withdraw_embed(w: dict) -> discord.Embed:
+    return bm.ui.embed(
+        "🪙 Your gold withdrawal request",
+        f"Amount: **{fmt_int(w.get('amount'))} Gold**\n"
+        f"Request: `{w.get('id')}`\nStatus: **{w.get('status')}**\n\n"
+        "You can **Change amount** or **Cancel request** until the owner accepts. "
+        "Once accepted, the amount is locked and deducted from your balance.",
+        "gold", footer="Wigglesworth • creator rewards • .creator withdrawgold")
 
 
 async def request_gold_withdrawal(guild, g: dict, member, amount) -> dict:
@@ -1052,15 +1090,24 @@ async def fulfill_gold_withdrawal(guild, g: dict, w: dict | None, by=None) -> di
         return {"ok": False, "error": "Withdrawal not found."}
     if w.get("status") != "pending":
         return {"ok": False, "error": f"Already {w.get('status')}."}
+    amount = int(w.get("amount") or 0)
     w["status"] = "fulfilled"
+    w["deducted_amount"] = amount
     w["handled_by"] = str(getattr(by, "id", by) or "")
     w["handled_at"] = iso_now()
+    rec = g.get("allowances", {}).get(str(w.get("user_id"))) or {}
+    if rec:
+        rec["deducted"] = deducted_gold(g, w.get("user_id"))
+        rec["remaining"] = pending_gold(g, w.get("user_id"))
     save()
-    if pending_gold(g, w.get("user_id")) == 0:
+    remaining = pending_gold(g, w.get("user_id"))
+    if remaining == 0:
         mark_allowance_paid(g, w.get("user_id"), by=w["handled_by"])
     await _dm_creator(guild, w.get("user_id"),
-                      f"Your **{fmt_int(w.get('amount'))} Gold** withdrawal was accepted "
-                      f"and delivered in-game. (Request `{w.get('id')}`)")
+                      f"Your withdrawal was accepted. **{fmt_int(amount)} Gold** has been "
+                      f"deducted from your Discord balance for the amount delivered in-game. "
+                      f"Remaining this month: **{fmt_int(remaining)} Gold**. "
+                      f"(Request `{w.get('id')}`)")
     return {"ok": True, "withdrawal": w}
 
 
@@ -1155,7 +1202,7 @@ class GoldWithdrawalView(discord.ui.View):
         await self._close_card(interaction)
         await interaction.followup.send(f"Accepted `{w['id']}` ✅", ephemeral=True)
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger,
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger,
                        custom_id="creator:withdraw:cancel")
     async def cancel_btn(self, interaction: discord.Interaction, _):
         g, ok = await self._guard(interaction)
@@ -1177,9 +1224,124 @@ class GoldWithdrawalView(discord.ui.View):
         if not ok:
             return
         w = find_withdrawal_for_message(g, interaction.message)
+        await interaction.response.send_modal(WithdrawAmountModal(w["id"]))
+
+
+class WithdrawAmountModal(discord.ui.Modal, title="Gold withdrawal"):
+    """Type the amount in-game, either as a new request or an edit."""
+
+    amount = discord.ui.TextInput(label="Amount of Gold", placeholder="e.g. 250",
+                                  min_length=1, max_length=7, required=True)
+
+    def __init__(self, wid: str | None = None) -> None:
+        super().__init__()
+        self.wid = wid
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        g = gdata(interaction.guild_id)
+        digits = re.sub(r"\D", "", str(self.amount.value))
+        if not digits:
+            await interaction.response.send_message("Enter a number of Gold.", ephemeral=True)
+            return
+        value = int(digits)
+
+        if self.wid is None:
+            res = await request_gold_withdrawal(interaction.guild, g,
+                                                interaction.user, value)
+            if not res.get("ok"):
+                await interaction.response.send_message(res["error"], ephemeral=True)
+                return
+            w = find_withdrawal(g, res["wid"])
+            if getattr(interaction.message, "id", None):
+                g.setdefault("by_withdraw_message", {})[str(interaction.message.id)] = w["id"]
+                w["creator_message_id"] = interaction.message.id
+                save()
+            await interaction.response.send_message(
+                f"Requested **{fmt_int(value)} Gold** — `{w['id']}`. "
+                "Change or cancel below until the owner accepts.", ephemeral=True)
+            try:
+                await interaction.message.edit(embed=_creator_withdraw_embed(w),
+                                               view=CreatorWithdrawalView())
+            except (discord.Forbidden, discord.HTTPException, AttributeError):
+                pass
+            return
+
+        w = find_withdrawal(g, self.wid)
+        if not w or w.get("status") != "pending":
+            await interaction.response.send_message(
+                "That request is no longer pending — the amount is locked.", ephemeral=True)
+            return
+        res = await modify_gold_withdrawal(interaction.guild, g, w, value,
+                                           interaction.user)
+        if not res.get("ok"):
+            await interaction.response.send_message(res["error"], ephemeral=True)
+            return
         await interaction.response.send_message(
-            f"Change the amount with:\n"
-            f"`.creator withdraw modify {w['id']} <new amount>`", ephemeral=True)
+            f"Updated `{w['id']}` to **{fmt_int(w['amount'])} Gold**.", ephemeral=True)
+        try:
+            is_owner = can_fulfill(interaction.user, interaction.guild, g)
+            embed = (_withdraw_embed(w, "🪙 Gold withdrawal request") if is_owner
+                     else _creator_withdraw_embed(w))
+            await interaction.message.edit(embed=embed)
+        except (discord.Forbidden, discord.HTTPException, AttributeError):
+            pass
+
+
+class WithdrawStartView(discord.ui.View):
+    """One button opens the amount box — no command syntax needed."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Withdraw gold", style=discord.ButtonStyle.primary,
+                       emoji="🪙", custom_id="creator:withdraw:start")
+    async def start_btn(self, interaction: discord.Interaction, _):
+        await interaction.response.send_modal(WithdrawAmountModal())
+
+
+class CreatorWithdrawalView(discord.ui.View):
+    """Creator controls on their own request card until the owner accepts."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    async def _guard(self, interaction) -> tuple[dict | None, dict | None]:
+        g = gdata(interaction.guild_id)
+        w = find_withdrawal_for_message(g, interaction.message)
+        if not w or str(w.get("user_id")) != str(interaction.user.id):
+            await interaction.response.send_message(
+                "That isn't your withdrawal request.", ephemeral=True)
+            return g, None
+        if w.get("status") != "pending":
+            await interaction.response.send_message(
+                f"Already **{w['status']}** — the amount is now locked.", ephemeral=True)
+            return g, None
+        return g, w
+
+    @discord.ui.button(label="Change amount", style=discord.ButtonStyle.primary,
+                       custom_id="creator:withdraw:change")
+    async def change_btn(self, interaction: discord.Interaction, _):
+        g, w = await self._guard(interaction)
+        if w is None:
+            return
+        await interaction.response.send_modal(WithdrawAmountModal(w["id"]))
+
+    @discord.ui.button(label="Cancel request", style=discord.ButtonStyle.danger,
+                       custom_id="creator:withdraw:withdraw")
+    async def cancel_btn(self, interaction: discord.Interaction, _):
+        g, w = await self._guard(interaction)
+        if w is None:
+            return
+        res = await cancel_gold_withdrawal(interaction.guild, g, w, interaction.user)
+        if not res.get("ok"):
+            await interaction.response.send_message(res["error"], ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"Cancelled `{w['id']}`. Your gold is available to request again.", ephemeral=True)
+        try:
+            await interaction.message.edit(view=None)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 
 class WithdrawConfirmView(discord.ui.View):
@@ -1208,15 +1370,27 @@ class WithdrawConfirmView(discord.ui.View):
         save()
         res = await request_gold_withdrawal(interaction.guild, g, interaction.user,
                                             pending.get("amount"))
+        if res.get("ok"):
+            w = find_withdrawal(g, res["wid"])
+            if w is not None and getattr(interaction.message, "id", None):
+                g.setdefault("by_withdraw_message", {})[str(interaction.message.id)] = res["wid"]
+                w["creator_message_id"] = interaction.message.id
+                save()
+            try:
+                await interaction.message.edit(embed=_creator_withdraw_embed(w),
+                                               view=CreatorWithdrawalView())
+            except (discord.Forbidden, discord.HTTPException, AttributeError):
+                pass
         await interaction.response.send_message(
             (f"Submitted `{res['wid']}` for **{fmt_int(res['amount'])} Gold**. "
-             "The owner will review it."
+             "Use the buttons above to change the amount or cancel before the owner accepts."
              if res.get("ok") else res.get("error") or "Could not submit that request."),
             ephemeral=True)
-        try:
-            await interaction.message.edit(view=None)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        if not res.get("ok"):
+            try:
+                await interaction.message.edit(view=None)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary,
                        custom_id="creator:withdraw:deny")
@@ -1901,7 +2075,8 @@ HELP = """**Creator commands**
 `.creator link <channel url>` — link the channel you post on
 `.creator shop` — rewards and prices (Buy buttons work too)
 `.creator buy <1-3>` — spend credits on a reward (owner gets pinged)
-`.creator withdrawgold <amount>` — request your monthly gold (needs confirmation)
+`.creator withdrawgold` — button + text box for the gold you want in-game
+`.creator withdrawgold status|modify <amount>|cancel` — change or cancel before acceptance
 `.creator leaderboard` — top creators this month
 `.creator submit <video link>` — submit without posting in the channel
 
@@ -1991,23 +2166,72 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         return
 
     if sub == "withdrawgold":
+        tail = rest.split()
+        action = tail[0].lower() if tail else ""
+        uid = str(ctx.author.id)
+        available = pending_gold(g, uid)
+        if action in ("status", "mine"):
+            mine = withdrawals_for(g, uid)
+            if not mine:
+                await ctx.reply(
+                    f"You have **{fmt_int(available)} Gold** available. "
+                    "Run `.creator withdrawgold` to request some.", mention_author=False)
+                return
+            lines = [f"`{w['id']}` — **{fmt_int(w.get('amount'))} Gold** — {w.get('status')}"
+                     for w in mine[:10]]
+            lines.append(f"**Available:** {fmt_int(available)} Gold")
+            await ctx.reply(embed=bm.ui.embed("🪙 Your gold withdrawals", "\n".join(lines),
+                                              "gold"), mention_author=False)
+            return
+        if action in ("modify", "change"):
+            w = latest_pending_withdrawal(g, uid)
+            if w is None:
+                await ctx.reply("You have no pending request to change.", mention_author=False)
+                return
+            try:
+                amount = int(tail[1])
+            except (IndexError, ValueError):
+                await ctx.reply("Usage: `.creator withdrawgold modify <amount>`",
+                                mention_author=False)
+                return
+            res = await modify_gold_withdrawal(ctx.guild, g, w, amount, ctx.author)
+            await ctx.reply(res.get("error") or
+                            f"Updated `{w['id']}` to **{fmt_int(w['amount'])} Gold**.",
+                            mention_author=False)
+            return
+        if action in ("cancel", "deny"):
+            w = latest_pending_withdrawal(g, uid)
+            if w is None:
+                await ctx.reply("You have no pending request to cancel.", mention_author=False)
+                return
+            res = await cancel_gold_withdrawal(ctx.guild, g, w, ctx.author)
+            await ctx.reply(res.get("error") or
+                            f"Cancelled `{w['id']}`. Your gold is available again.",
+                            mention_author=False)
+            return
         if not rest:
+            if available <= 0:
+                await ctx.reply(
+                    "You have no gold available this month. Ask staff to queue allowances.",
+                    mention_author=False)
+                return
             await ctx.reply(
-                "Usage: `.creator withdrawgold <amount>` — request to withdraw "
-                "your monthly gold allowance.", mention_author=False)
+                f"You have **{fmt_int(available)} Gold** available. Press the button and "
+                "type how much you want in-game. Nothing is deducted until the owner accepts.",
+                view=WithdrawStartView(), mention_author=False)
             return
         try:
-            amount = int(rest.split()[0])
+            amount = int(tail[0])
         except ValueError:
-            await ctx.reply("Amount must be a number.", mention_author=False)
+            await ctx.reply("Amount must be a number, or use the button.",
+                            mention_author=False)
             return
         if amount <= 0:
             await ctx.reply("Amount must be greater than 0.", mention_author=False)
             return
-        available = pending_gold(g, ctx.author.id)
         if available <= 0:
             await ctx.reply(
-                "You have no pending gold this month. Ask staff to queue allowances.",
+                "You have no gold available this month. Ask staff to queue allowances.",
                 mention_author=False)
             return
         if amount > available:
@@ -2015,12 +2239,12 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
                 f"You only have **{fmt_int(available)} Gold** available to withdraw.",
                 mention_author=False)
             return
-        g.setdefault("pending_withdrawals", {})[str(ctx.author.id)] = {
+        g.setdefault("pending_withdrawals", {})[uid] = {
             "amount": amount, "at": now_ts()}
         save()
         await ctx.reply(
             f"Confirm: withdraw **{fmt_int(amount)} Gold** from your pending allowance? "
-            "The owner must still accept the request before anything is delivered.",
+            "The owner must still accept before anything is delivered or deducted.",
             view=WithdrawConfirmView(), mention_author=False)
         return
 
@@ -2101,6 +2325,115 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
 
     if sub == "leaderboard":
         await ctx.reply(embed=leaderboard_embed(ctx.guild, g), mention_author=False)
+        return
+
+    if sub in ("allowance", "allowances"):
+        tail = rest.split()
+        action = tail[0].lower() if tail else ""
+        month = month_key()
+        gold = allowance_gold(g)
+        enabled = bool(g["settings"].get("allowance_enabled", True))
+        staff = can_fulfill(ctx.author, ctx.guild, g)
+        if action in ("", "status", "mine"):
+            uid = str(ctx.author.id)
+            rec = g.get("allowances", {}).get(uid) or {}
+            mine = withdrawals_for(g, uid, month)
+            waiting = [w for w in mine if w.get("status") == "pending"]
+            delivered = [w for w in mine if w.get("status") == "fulfilled"]
+            if rec.get("month") != month:
+                state = "not queued yet"
+            elif rec.get("status") == "paid":
+                state = "paid ✅"
+            else:
+                state = "queued for the owner ⏳"
+            lines = [
+                f"**Your monthly gold:** {fmt_int(rec.get('gold') or gold)} Gold — {state}",
+                f"**Available to withdraw:** {fmt_int(pending_gold(g, uid))} Gold",
+                f"**Pending request:** "
+                + (f"`{waiting[0]['id']}` — {fmt_int(waiting[0].get('amount'))} Gold "
+                   "(change or cancel with `.creator withdrawgold modify|cancel`)"
+                   if waiting else "none"),
+                f"**Delivered this month:** "
+                + (f"{fmt_int(sum(int(w.get('deducted_amount') or w.get('amount') or 0) for w in delivered))} Gold"
+                   if delivered else "none"),
+            ]
+            if staff:
+                records = allowance_month(g, month)
+                pending = [r for r in records if r.get("status") == "pending"]
+                paid = [r for r in records if r.get("status") == "paid"]
+                lines += [
+                    "", f"**All creators:** {fmt_int(gold)} Gold each · "
+                    f"{'on ✅' if enabled else 'off ❌'} · "
+                    f"{len(pending)} pending · {len(paid)} paid",
+                ]
+                if pending:
+                    names = ", ".join(f"<@{r['user_id']}>" for r in pending[:15])
+                    lines.append(f"**Waiting on owner:** {names}"
+                                 + (f" +{len(pending) - 15} more" if len(pending) > 15 else ""))
+            lines.append("Withdrawing is optional: `.creator withdrawgold <amount>`. "
+                         "Nothing is deducted until the owner accepts.")
+            em = bm.ui.embed("💰 Monthly creator gold", "\n".join(lines), "gold",
+                             footer=f"Wigglesworth • creator rewards • {BUILD}")
+            await ctx.reply(embed=em, mention_author=False)
+            return
+        if not staff:
+            await ctx.reply("Staff only. Try `.creator allowance` to see your own gold.",
+                            mention_author=False)
+            return
+        if action == "queue":
+            new = queue_allowances(ctx.guild, g, month)
+            if not new:
+                why = "The allowance is off." if not enabled else "Everyone is already queued or paid this month."
+                await ctx.reply(f"Nothing to queue. {why}", mention_author=False)
+                return
+            await notify_allowances(ctx.guild, g, new)
+            await ctx.reply(f"Queued **{len(new)}** creator(s) for {fmt_int(gold)} Gold "
+                            "each and pinged the owner.", mention_author=False)
+            return
+        if action == "paid":
+            if len(tail) > 1 and tail[1].lower() == "all":
+                changed = mark_all_allowances_paid(g, ctx.author.id, month)
+                await ctx.reply(f"Marked **{changed}** allowance(s) paid for this month.",
+                                mention_author=False)
+                return
+            targets = ctx.message.mentions if ctx.message else []
+            if not targets and len(tail) > 1:
+                uid = re.sub(r"\D", "", tail[1])
+                member = ctx.guild.get_member(int(uid)) if uid else None
+                targets = [member] if member else []
+            if not targets:
+                await ctx.reply("Usage: `.creator allowance paid @user` or "
+                                "`.creator allowance paid all`", mention_author=False)
+                return
+            changed = sum(1 for user in targets
+                          if mark_allowance_paid(g, user.id, ctx.author.id, month))
+            await ctx.reply(f"Marked **{changed}** allowance(s) paid.", mention_author=False)
+            return
+        if action == "amount":
+            digits = re.sub(r"\D", "", rest[len(tail[0]):])
+            if not digits:
+                await ctx.reply("Usage: `.creator allowance amount 500`", mention_author=False)
+                return
+            amount = max(0, min(int(digits), 1_000_000))
+            g["settings"]["allowance_gold"] = amount
+            save()
+            await ctx.reply(f"Monthly gold is now **{fmt_int(amount)}**. "
+                            "It applies to the next queued month.", mention_author=False)
+            return
+        if action in ("on", "off"):
+            g["settings"]["allowance_enabled"] = action == "on"
+            save()
+            if action == "on":
+                new = queue_allowances(ctx.guild, g, month)
+                if new:
+                    await notify_allowances(ctx.guild, g, new)
+                    await ctx.reply(f"Monthly gold is **on** — queued {len(new)} creator(s) "
+                                    "and pinged the owner.", mention_author=False)
+                    return
+            await ctx.reply(f"Monthly gold is **{action}**.", mention_author=False)
+            return
+        await ctx.reply("Usage: `.creator allowance [status|queue|paid @user|paid all|"
+                        "amount 500|on|off]`", mention_author=False)
         return
 
     # ---- staff-only below ----
@@ -2201,88 +2534,6 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         save()
         await ctx.reply(f"Videos must now be at least **{secs}s** to auto-approve. "
                         "Shorter ones go to staff review.", mention_author=False)
-        return
-
-    if sub in ("allowance", "allowances"):
-        tail = rest.split()
-        action = tail[0].lower() if tail else ""
-        month = month_key()
-        gold = allowance_gold(g)
-        enabled = bool(g["settings"].get("allowance_enabled", True))
-        if action in ("", "status"):
-            records = allowance_month(g, month)
-            pending = [r for r in records if r.get("status") == "pending"]
-            paid = [r for r in records if r.get("status") == "paid"]
-            lines = [
-                f"**Monthly gold:** {fmt_int(gold)} Gold per creator",
-                f"**Status:** {'on ✅' if enabled else 'off ❌'}",
-                f"**{datetime.strptime(month, '%Y-%m').strftime('%B %Y')}:** "
-                f"{len(pending)} pending · {len(paid)} paid",
-            ]
-            if pending:
-                names = ", ".join(f"<@{r['user_id']}>" for r in pending[:15])
-                lines.append(f"**Waiting on owner:** {names}"
-                             + (f" +{len(pending) - 15} more" if len(pending) > 15 else ""))
-            lines.append("Queue with `.creator allowance queue`, then mark with "
-                         "`.creator allowance paid @user` or `paid all`.")
-            em = bm.ui.embed("💰 Monthly creator gold", "\n".join(lines), "gold",
-                             footer=f"Wigglesworth • creator rewards • {BUILD}")
-            await ctx.reply(embed=em, mention_author=False)
-            return
-        if action == "queue":
-            new = queue_allowances(ctx.guild, g, month)
-            if not new:
-                why = "The allowance is off." if not enabled else "Everyone is already queued or paid this month."
-                await ctx.reply(f"Nothing to queue. {why}", mention_author=False)
-                return
-            await notify_allowances(ctx.guild, g, new)
-            await ctx.reply(f"Queued **{len(new)}** creator(s) for {fmt_int(gold)} Gold "
-                            "each and pinged the owner.", mention_author=False)
-            return
-        if action == "paid":
-            if len(tail) > 1 and tail[1].lower() == "all":
-                changed = mark_all_allowances_paid(g, ctx.author.id, month)
-                await ctx.reply(f"Marked **{changed}** allowance(s) paid for this month.",
-                                mention_author=False)
-                return
-            targets = ctx.message.mentions if ctx.message else []
-            if not targets and len(tail) > 1:
-                uid = re.sub(r"\D", "", tail[1])
-                member = ctx.guild.get_member(int(uid)) if uid else None
-                targets = [member] if member else []
-            if not targets:
-                await ctx.reply("Usage: `.creator allowance paid @user` or "
-                                "`.creator allowance paid all`", mention_author=False)
-                return
-            changed = sum(1 for user in targets
-                          if mark_allowance_paid(g, user.id, ctx.author.id, month))
-            await ctx.reply(f"Marked **{changed}** allowance(s) paid.", mention_author=False)
-            return
-        if action == "amount":
-            digits = re.sub(r"\D", "", rest[len(tail[0]):])
-            if not digits:
-                await ctx.reply("Usage: `.creator allowance amount 500`", mention_author=False)
-                return
-            amount = max(0, min(int(digits), 1_000_000))
-            g["settings"]["allowance_gold"] = amount
-            save()
-            await ctx.reply(f"Monthly gold is now **{fmt_int(amount)}**. "
-                            "It applies to the next queued month.", mention_author=False)
-            return
-        if action in ("on", "off"):
-            g["settings"]["allowance_enabled"] = action == "on"
-            save()
-            if action == "on":
-                new = queue_allowances(ctx.guild, g, month)
-                if new:
-                    await notify_allowances(ctx.guild, g, new)
-                    await ctx.reply(f"Monthly gold is **on** — queued {len(new)} creator(s) "
-                                    "and pinged the owner.", mention_author=False)
-                    return
-            await ctx.reply(f"Monthly gold is **{action}**.", mention_author=False)
-            return
-        await ctx.reply("Usage: `.creator allowance [status|queue|paid @user|paid all|"
-                        "amount 500|on|off]`", mention_author=False)
         return
 
     if sub in ("orders", "purchases"):
@@ -2398,6 +2649,8 @@ def setup(bot_module) -> None:
     _bot.add_view(RedeemView())
     _bot.add_view(ShopBuyView())
     _bot.add_view(GoldWithdrawalView())
+    _bot.add_view(CreatorWithdrawalView())
+    _bot.add_view(WithdrawStartView())
     try:
         if not getattr(_bot, "_creator_allowance_task", None):
             _bot._creator_allowance_task = asyncio.create_task(_allowance_loop())
