@@ -961,6 +961,57 @@ async def on_message(message: discord.Message) -> None:
         if await automod_check(message):
             await bot.process_commands(message)
             return  # deleted + handled, no XP
+    # No-ping protection: certain users can't be pinged. Warn on ping (strike
+    # tracking -> timeout on 3rd strike within the automod window). Admins,
+    # owners, whitelisted users and the protected user themselves are exempt.
+    try:
+        nopings = cfg.get("nopings") or {}
+        if nopings and isinstance(message.author, discord.Member):
+            timeout_mins = int(cfg.get("timeout_duration_minutes", 10))
+            for target in list(message.mentions):
+                key = str(target.id)
+                if key not in nopings:
+                    continue
+                if message.author.id in OWNER_IDS:
+                    continue
+                if is_whitelisted(message.author, cfg):
+                    continue
+                if (message.author.guild_permissions.administrator
+                        or message.author.guild_permissions.manage_guild):
+                    continue
+                if message.author.id == target.id:
+                    continue
+                trigger = nopings.get(key)
+                content_low = (message.content or "").lower()
+                if trigger and str(trigger).lower() not in content_low:
+                    continue
+                word_part = f" with '{trigger}'" if trigger else ""
+                try:
+                    await message.channel.send(embed=ui.warn(
+                        f"{message.author.mention} please don't ping {target.mention}{word_part}.",
+                        "No-ping"), delete_after=6)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+                strikes = nopings_strikes[message.guild.id][message.author.id]
+                now = time.time()
+                strikes[:] = [t for t in strikes if now - t < AUTOMOD_STRIKE_WINDOW_S]
+                strikes.append(now)
+                if len(strikes) >= 3:
+                    nopings_strikes[message.guild.id][message.author.id] = []
+                    try:
+                        await message.author.timeout(
+                            timedelta(minutes=timeout_mins),
+                            reason="No-ping: 3rd strike")
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+                    try:
+                        await message.channel.send(embed=ui.warn(
+                            f"{message.author.mention} timed out for {timeout_mins} min "
+                            f"(3 no-ping strikes).", "No-ping"), delete_after=8)
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+    except Exception as exc:
+        print(f"[nopings] failed: {type(exc).__name__}: {exc}")
     if raid_active.get(message.guild.id):
         await bot.process_commands(message)
         return  # no XP farming during lockdown
@@ -2107,6 +2158,7 @@ AUTOMOD_STRIKE_WINDOW_S = 600
 SPAM_COUNT, SPAM_WINDOW_S = 4, 30
 ping_track: dict[int, dict[int, deque]] = defaultdict(lambda: defaultdict(deque))
 PING_COUNT, PING_WINDOW_S = 15, 60  # >15 pings in 60s = ping spam
+nopings_strikes: dict[int, dict[int, list]] = defaultdict(lambda: defaultdict(list))
 AUTOMOD_STRIKES_TO_MUTE = 3
 
 INVITE_RE = None
@@ -4635,6 +4687,103 @@ async def cmd_whitelist(ctx: commands.Context, action: str = "", target: str = "
     update_config(ctx.guild.id, whitelisted_user_ids=users)
     await ctx.send(embed=ui.ok(f"Whitelist {'added' if action == 'add' else 'removed'}: `{tid}`.",
                                "Whitelist updated"))
+
+
+# ---------- no-ping protection ----------
+@bot.command(name="nopings")
+@trusted_only()
+async def cmd_nopings(ctx: commands.Context, action: str = "", target: str = "", word: str = "") -> None:
+    """Manage users who can't be pinged. Usage:
+    .nopings add @user [triggerword]   - protect a user (optionally only warn when `word` is said)
+    .nopings remove @user              - unprotect
+    .nopings list                      - show protected users
+    .nopings word @user <word|clear>   - set/clear the trigger word
+    .nopings timeout <minutes>         - set timeout length on 3rd strike
+    """
+    cfg = get_config(ctx.guild.id)
+    action = action.lower()
+    if action == "list":
+        nopings = cfg.get("nopings") or {}
+        if not nopings:
+            await ctx.send(embed=ui.info("No protected users.", "No-ping"))
+            return
+        lines = []
+        for uid, trigger in nopings.items():
+            member = ctx.guild.get_member(int(uid))
+            name = member.display_name if member else uid
+            t = f" (trigger: '{trigger}')" if trigger else " (any ping)"
+            lines.append(f"• {name} (`{uid}`){t}")
+        await ctx.send(embed=ui.embed(
+            "🛡️ No-ping list",
+            "\n".join(lines) + f"\n\nTimeout on 3rd strike: {cfg.get('timeout_duration_minutes', 10)} min",
+            "info", footer=f"{ui.FOOTER} • protected members"))
+        return
+    if action == "timeout":
+        try:
+            mins = int(target)
+        except (ValueError, TypeError):
+            await ctx.send(embed=ui.info(f"`{PREFIX}nopings timeout <minutes>`", "No-ping"))
+            return
+        mins = max(1, min(1440, mins))
+        update_config(ctx.guild.id, timeout_duration_minutes=mins)
+        await ctx.send(embed=ui.ok(f"No-ping timeout set to **{mins} min**.", "No-ping"))
+        return
+    if action == "word":
+        raw = target.strip("<>@#!&")
+        try:
+            tid = int(raw)
+        except ValueError:
+            await ctx.send(embed=ui.info(f"`{PREFIX}nopings word @user <word|clear>`", "No-ping"))
+            return
+        nopings = dict(cfg.get("nopings") or {})
+        if str(tid) not in nopings:
+            await ctx.send(embed=ui.err(f"`{tid}` is not on the no-ping list. Add them first."))
+            return
+        if word.lower() == "clear":
+            nopings[str(tid)] = None
+        else:
+            nopings[str(tid)] = word.strip() or None
+        update_config(ctx.guild.id, nopings=nopings)
+        new = nopings[str(tid)]
+        await ctx.send(embed=ui.ok(
+            f"Trigger word for `{tid}` set to **{new}**." if new else
+            f"Trigger word cleared for `{tid}` (warns on any ping).", "No-ping"))
+        return
+    # add / remove
+    raw = target.strip("<>@#!&")
+    try:
+        tid = int(raw)
+    except ValueError:
+        await ctx.send(embed=ui.info(
+            f"`{PREFIX}nopings add|remove @user [triggerword]` · "
+            f"`{PREFIX}nopings list` · `{PREFIX}nopings word @user <word|clear>` · "
+            f"`{PREFIX}nopings timeout <minutes>`", "No-ping"))
+        return
+    member = ctx.guild.get_member(tid) if ctx.guild else None
+    nopings = dict(cfg.get("nopings") or {})
+    if action == "add":
+        if str(tid) in nopings:
+            await ctx.send(embed=ui.info(f"`{tid}` is already protected.", "No-ping"))
+            return
+        nopings[str(tid)] = (word.strip() or None)
+        update_config(ctx.guild.id, nopings=nopings)
+        t = f" (trigger: '{word}')" if word.strip() else " (any ping)"
+        await ctx.send(embed=ui.ok(
+            f"Protected **{member.display_name if member else tid}**{t}.", "No-ping"))
+        return
+    if action == "remove":
+        if str(tid) not in nopings:
+            await ctx.send(embed=ui.info(f"`{tid}` isn't on the no-ping list.", "No-ping"))
+            return
+        del nopings[str(tid)]
+        update_config(ctx.guild.id, nopings=nopings)
+        await ctx.send(embed=ui.ok(
+            f"Unprotected **{member.display_name if member else tid}**.", "No-ping"))
+        return
+    await ctx.send(embed=ui.info(
+        f"`{PREFIX}nopings add|remove @user [triggerword]` · "
+        f"`{PREFIX}nopings list` · `{PREFIX}nopings word @user <word|clear>` · "
+        f"`{PREFIX}nopings timeout <minutes>`", "No-ping"))
 
 
 # ---------- verify gate (dyno-style) ----------
