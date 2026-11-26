@@ -23,6 +23,7 @@ import staff_tools
 import holiday
 import voice_tts
 import creator
+import quest_rules
 
 load_dotenv()
 
@@ -1482,6 +1483,30 @@ def trusted_only():
             return bool(is_whitelisted(ctx.author, get_config(ctx.guild.id)))
         except Exception:
             return False
+    return commands.check(predicate)
+
+
+def whitelist_only():
+    """Allow bot owners or whitelisted users/roles only (no admin bypass).
+
+    Used for sensitive voice commands (``.vcjoin`` / ``.vcleave``) so that
+    server admins who are not on the whitelist cannot move the bot.
+    """
+    async def predicate(ctx: commands.Context) -> bool:
+        if ctx.guild is None:
+            return False
+        try:
+            if ctx.author.id in OWNER_IDS:
+                return True
+        except NameError:
+            pass
+        try:
+            cfg = get_config(ctx.guild.id)
+            if quest_rules.explicitly_whitelisted(ctx.author, cfg):
+                return True
+        except Exception:
+            pass
+        return False
     return commands.check(predicate)
 
 
@@ -4065,7 +4090,7 @@ async def cmd_setabusechannel(ctx: commands.Context, channel: discord.TextChanne
 
 
 @bot.command(name="vcjoin")
-@trusted_only()
+@whitelist_only()
 async def cmd_vcjoin(ctx: commands.Context, channel: str = "") -> None:
     """Bot joins a VC and sits in it. Usage: .vcjoin [#voice] (staff/whitelist only)."""
     target = None
@@ -4426,7 +4451,7 @@ async def cmd_voiceauto(ctx: commands.Context, state: str = "") -> None:
 
 
 @bot.command(name="vcleave")
-@trusted_only()
+@whitelist_only()
 async def cmd_vcleave(ctx: commands.Context) -> None:
     vc = ctx.guild.voice_client if ctx.guild else None
     if not vc:
@@ -5433,8 +5458,7 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
                                                      "rolemenu", "teach", "unteach", "mood",
                                                      "setqotd", "chaton", "chatoff", "explode",
                                                      "setwelcome", "setgoodbye",
-                                                     "linkchannel", "vcjoin", "vcleave",
-                                                     "voiceauto", "voice", "xpconfig"):
+                                                     "linkchannel", "voiceauto", "voice", "xpconfig"):
             await ctx.send(embed=ui.err("Bot owner or server admin only."))
         elif ctx.command and ctx.command.name in ("say", "speak", "vcjoin", "vcleave",
                                                       "voice", "voiceauto", "setlobby", "help2"):
