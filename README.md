@@ -128,3 +128,16 @@ in place after deployment, with mentions disabled.
 changes). It requires an explicitly whitelisted user or role, including for
 admins; `.whitelist add @user` / `.whitelist add @role` manage access. The command
 is server-only, has a 30-second per-member cooldown, and disables every mention.
+
+
+## Moderation commands (ban / kick / mute)
+
+`.ban @user [reason]`, `.kick @user [reason]`, and `.mute @user [minutes] [reason]`
+work on any member below the caller's top role. Run them with no user to get a
+member picker and a confirmation button instead of typing a mention. `.unmute @user`
+and `.unban <user ID>` reverse them.
+
+Bot owners, server admins, and anyone added with `.mods add @user` may use these
+commands. `.mods list` shows the extra moderators; `.mods remove @user` revokes
+access. The bot itself still needs **Ban Members**, **Kick Members**, and
+**Moderate Members**, and its role must sit above the target's role.

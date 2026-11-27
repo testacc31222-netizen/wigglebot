@@ -255,6 +255,7 @@ DEFAULT_GUILD_CONFIG = {
     "log_channel_id": None,
     "whitelisted_user_ids": [],
     "whitelisted_role_ids": [],
+    "moderator_user_ids": [],   # extra users allowed to use .ban/.kick/.mute
     "automod_invites": True,    # delete discord invites (top raid vector)
     "automod_links": False,     # delete all links
     "automod_max_mentions": 5,  # more mentions = delete + strike
@@ -1663,6 +1664,24 @@ def owner_or_admin():
 def owner_only():
     async def predicate(ctx: commands.Context) -> bool:
         return ctx.author.id in OWNER_IDS
+    return commands.check(predicate)
+
+
+def moderator_only():
+    """Bot owners, server admins, or users chosen with ``.mods add``."""
+    async def predicate(ctx: commands.Context) -> bool:
+        if ctx.guild is None:
+            return False
+        if ctx.author.id in OWNER_IDS:
+            return True
+        if (ctx.author.guild_permissions.administrator
+                or ctx.author.guild_permissions.manage_guild):
+            return True
+        try:
+            cfg = get_config(ctx.guild.id)
+            return ctx.author.id in {int(x) for x in cfg.get("moderator_user_ids", [])}
+        except Exception:
+            return False
     return commands.check(predicate)
 
 
@@ -5113,8 +5132,11 @@ async def cmd_help2(ctx: commands.Context) -> None:
     em.add_field(name="📢 Broadcast (whitelist+)",
                  value="`.say` · `.speak` · `.vcjoin` · `.vcleave` · `.voice` · `.voiceauto` · `.setlobby`",
                  inline=False)
-    em.add_field(name="🛡️ Mod (admin+)",
-                 value=("`.purge` · `.mute` · `.unmute` · `.slowmode` · `.lockdown` · `.unlock`\n"
+    em.add_field(name="🛡️ Mod (staff+)",
+                 value=("`.ban @user [reason]` · `.kick @user [reason]` · "
+                        "`.mute @user [minutes] [reason]`\n"
+                        "`.unmute @user` · `.unban <user ID>` · `.mods add|remove|list`\n"
+                        "`.purge` · `.slowmode` · `.lockdown` · `.unlock`\n"
                         "`.raidmode` · `.raidconfig` · `.whitelist` · `.temprole` · `.poll end`"),
                  inline=False)
     em.add_field(name="🎬 Creators (open + staff)",
@@ -5261,42 +5283,337 @@ async def cmd_purge(ctx: commands.Context, amount: int = 0,
         await ctx.send(embed=ui.err(f"Purge failed (need **Manage Messages**): {exc}"))
 
 
+# ---------- mod actions: ban / kick / mute / extra moderators ----------
+
+MOD_META = {
+    "ban":  {"emoji": "🔨", "title": "Ban",  "past": "banned",  "perm": "Ban Members"},
+    "kick": {"emoji": "👢", "title": "Kick", "past": "kicked",  "perm": "Kick Members"},
+    "mute": {"emoji": "🔇", "title": "Mute", "past": "muted",   "perm": "Moderate Members"},
+}
+
+
+def _mod_guard(ctx: commands.Context, member) -> str | None:
+    # Returns a friendly error string when this action must not run.
+    if not isinstance(member, discord.Member):
+        return "Choose a member from this server."
+    if member.id == ctx.author.id:
+        return "You can't use that on yourself."
+    if bot.user and member.id == bot.user.id:
+        return "I can't do that to myself."
+    if member.id in OWNER_IDS:
+        return "That user is a bot owner and can't be moderated."
+    if member.id == ctx.guild.owner_id:
+        return "The server owner can't be moderated."
+    if ctx.guild.me and member.top_role >= ctx.guild.me.top_role:
+        return (f"I can't act on **{member.display_name}** - their top role is not "
+                f"below mine. Move my role higher first.")
+    if (ctx.author.id not in OWNER_IDS and ctx.author.id != ctx.guild.owner_id
+            and member.top_role >= ctx.author.top_role):
+        return f"**{member.display_name}** has an equal or higher role than you."
+    return None
+
+
+async def perform_mod_action(ctx: commands.Context, action: str, member,
+                             reason: str = "", minutes: int = 10) -> None:
+    err = _mod_guard(ctx, member)
+    if err:
+        await ctx.send(embed=ui.err(err))
+        return
+    meta = MOD_META[action]
+    reason = sanitize_mentions((reason or "").strip())[:300]
+    audit = f"{ctx.author} ({ctx.author.id}): {reason or 'no reason'}"
+    guild = ctx.guild
+    dm_text = {
+        "ban":  f"You were banned from **{guild.name}**.",
+        "kick": f"You were kicked from **{guild.name}**.",
+        "mute": f"You were muted in **{guild.name}** for **{minutes}m**.",
+    }[action]
+    try:
+        await member.send(embed=ui.embed(
+            f"{meta['emoji']} {meta['title']}",
+            dm_text + (f"\n**Reason:** {reason}" if reason else ""), "warning"))
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    try:
+        if action == "ban":
+            await member.ban(reason=audit, delete_message_seconds=0)
+            done = f"**{member.display_name}** was **banned**."
+        elif action == "kick":
+            await member.kick(reason=audit)
+            done = f"**{member.display_name}** was **kicked**."
+        else:
+            await member.timeout(timedelta(minutes=minutes), reason=audit)
+            done = f"**{member.display_name}** was **muted** for **{minutes}m**."
+    except discord.Forbidden:
+        await ctx.send(embed=ui.err(
+            f"Discord blocked the {action} - I need **{meta['perm']}** and my role "
+            f"must be above theirs."))
+        return
+    except discord.HTTPException as exc:
+        await ctx.send(embed=ui.err(f"{meta['title']} failed: {exc}"))
+        return
+    detail = f"\n**Reason:** {reason}" if reason else ""
+    await ctx.send(embed=ui.ok(done + detail, f"{meta['emoji']} {meta['title']}"))
+    try:
+        await send_log(guild, "", event=action, embed=ui.embed(
+            f"{meta['emoji']} Member {meta['past']}",
+            f"**{member.display_name}** (`{member.id}`) - {action} by "
+            f"**{ctx.author.display_name}** (`{ctx.author.id}`)"
+            f"{': ' + reason if reason else ''}",
+            "warning", footer=f"{ui.FOOTER} • moderation"))
+    except Exception:
+        pass
+    try:
+        community.open_case(guild.id, member.id, member.display_name, ctx.author.id,
+                            str(ctx.author), action, reason or action)
+    except Exception:
+        pass
+
+
+class ModConfirmView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, action: str, member: discord.Member,
+                 reason: str = "", minutes: int = 10):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.action = action
+        self.member = member
+        self.reason = reason
+        self.minutes = minutes
+        self.confirm.label = f"Confirm {MOD_META[action]['title'].lower()}"
+        self.confirm.style = (discord.ButtonStyle.danger if action in ("ban", "kick")
+                              else discord.ButtonStyle.primary)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the person who ran the command can confirm this.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        for child in self.children:
+            child.disabled = True
+        meta = MOD_META[self.action]
+        await interaction.response.edit_message(
+            embed=ui.embed(
+                f"{meta['emoji']} {meta['title']} requested",
+                f"Running **{self.action}** on **{self.member.display_name}** - "
+                f"the result will appear below.",
+                "info"),
+            view=self)
+        self.stop()
+        await perform_mod_action(self.ctx, self.action, self.member,
+                                 self.reason, self.minutes)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            embed=ui.info("Cancelled - nothing was changed.", "Moderation"), view=self)
+        self.stop()
+
+
+class ModPickView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, action: str, reason: str = "",
+                 minutes: int = 10):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.action = action
+        self.reason = reason
+        self.minutes = minutes
+        self.select = discord.ui.UserSelect(
+            placeholder=f"Choose a member to {action}...", min_values=1, max_values=1)
+        self.select.callback = self.picked
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Only the person who ran the command can pick a member.", ephemeral=True)
+            return False
+        return True
+
+    async def picked(self, interaction: discord.Interaction) -> None:
+        member = self.select.values[0] if self.select.values else None
+        err = _mod_guard(self.ctx, member)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        meta = MOD_META[self.action]
+        detail = f"\n**Reason:** {self.reason}" if self.reason else ""
+        extra = f"\n**Duration:** {self.minutes} min" if self.action == "mute" else ""
+        await interaction.response.edit_message(
+            embed=ui.embed(
+                f"{meta['emoji']} Confirm {self.action}",
+                f"Are you sure you want to {self.action} **{member.display_name}** "
+                f"(`{member.id}`)?{detail}{extra}",
+                "warning", footer=f"{ui.FOOTER} • press a button to continue"),
+            view=ModConfirmView(self.ctx, self.action, member, self.reason, self.minutes))
+        self.stop()
+
+
+async def _send_mod_picker(ctx: commands.Context, action: str, reason: str = "",
+                           minutes: int = 10) -> None:
+    if ctx.guild is None:
+        await ctx.send(embed=ui.err("Run this in a server."))
+        return
+    meta = MOD_META[action]
+    await ctx.send(
+        embed=ui.embed(
+            f"{meta['emoji']}  {meta['title']} a member",
+            f"Pick who you want to {action} from the menu below.\n"
+            f"You can also use `{PREFIX}{action} @user [reason]` directly.",
+            "warning", footer=f"{ui.FOOTER} • moderation"),
+        view=ModPickView(ctx, action, reason, minutes))
+
+
+@bot.command(name="ban")
+@moderator_only()
+async def cmd_ban(ctx: commands.Context, member: discord.Member | None = None,
+                  *, reason: str = "") -> None:
+    # Ban a member. Usage: .ban @user [reason] (omit @user to choose from a list)
+    if member is None:
+        await _send_mod_picker(ctx, "ban", reason)
+        return
+    await perform_mod_action(ctx, "ban", member, reason)
+
+
+@bot.command(name="kick")
+@moderator_only()
+async def cmd_kick(ctx: commands.Context, member: discord.Member | None = None,
+                   *, reason: str = "") -> None:
+    # Kick a member. Usage: .kick @user [reason] (omit @user to choose from a list)
+    if member is None:
+        await _send_mod_picker(ctx, "kick", reason)
+        return
+    await perform_mod_action(ctx, "kick", member, reason)
+
+
 @bot.command(name="mute")
-@admin_only()
-async def cmd_mute(ctx: commands.Context, member: discord.Member, minutes: int = 10,
-                   *, reason: str = "mod mute") -> None:
-    """Timeout a member. Usage: .mute @user [minutes] [reason]"""
-    if minutes < 1 or minutes > 40320:
-        await ctx.send(embed=ui.err("Minutes must be **1–40320** (28 days max)."))
+@moderator_only()
+async def cmd_mute(ctx: commands.Context, member: discord.Member | None = None,
+                   minutes: str = "10", *, reason: str = "") -> None:
+    # Timeout a member. Usage: .mute @user [minutes] [reason]
+    if member is None:
+        await _send_mod_picker(ctx, "mute", reason)
         return
     try:
-        await member.timeout(timedelta(minutes=minutes), reason=f"{ctx.author}: {reason}")
-        await ctx.send(embed=ui.ok(f"**{member.display_name}** muted for **{minutes}m**.\n"
-                                   f"**Reason:** {sanitize_mentions(reason[:200])}",
-                                   "🔇 Mute"))
-        await send_log(ctx.guild, "", event="mute", embed=ui.embed(
-            "🔇 Member muted",
-            f"**{member.display_name}** (`{member.id}`) — **{minutes}m** by "
-            f"**{ctx.author.display_name}**: {sanitize_mentions(reason[:1000])}",
-            "warning", footer=f"{ui.FOOTER} • moderation"))
-        try:
-            community.open_case(ctx.guild.id, member.id, member.display_name,
-                                ctx.author.id, str(ctx.author), "mute",
-                                f"{minutes}m: {reason}")
-        except Exception:
-            pass
-    except (discord.Forbidden, discord.HTTPException) as exc:
-        await ctx.send(embed=ui.err(f"Mute failed (role order or permissions?): {exc}"))
+        mins = int(minutes)
+    except ValueError:
+        reason = f"{minutes} {reason}".strip()
+        mins = 10
+    if mins < 1 or mins > 40320:
+        await ctx.send(embed=ui.err("Minutes must be **1-40320** (28 days max)."))
+        return
+    await perform_mod_action(ctx, "mute", member, reason, mins)
 
 
 @bot.command(name="unmute")
-@admin_only()
+@moderator_only()
 async def cmd_unmute(ctx: commands.Context, member: discord.Member) -> None:
     try:
         await member.timeout(None, reason=f"unmuted by {ctx.author}")
         await ctx.send(embed=ui.ok(f"**{member.display_name}** is unmuted.", "🔊 Unmute"))
     except (discord.Forbidden, discord.HTTPException) as exc:
         await ctx.send(embed=ui.err(f"Unmute failed: {exc}"))
+
+
+@bot.command(name="unban")
+@moderator_only()
+async def cmd_unban(ctx: commands.Context, user_id: str = "", *, reason: str = "") -> None:
+    # Unban by user ID. Usage: .unban <user ID> [reason]
+    raw = user_id.strip("<@!>")
+    try:
+        uid = int(raw)
+    except ValueError:
+        await ctx.send(embed=ui.info(f"`{PREFIX}unban <user ID> [reason]`", "Unban"))
+        return
+    try:
+        user = await bot.fetch_user(uid)
+    except discord.HTTPException:
+        user = discord.Object(id=uid)
+    try:
+        await ctx.guild.unban(user, reason=f"{ctx.author} ({ctx.author.id}): "
+                                           f"{reason or 'no reason'}")
+    except discord.NotFound:
+        await ctx.send(embed=ui.info(f"`{uid}` isn't banned.", "Unban"))
+        return
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        await ctx.send(embed=ui.err(f"Unban failed: {exc}"))
+        return
+    name = getattr(user, "display_name", None) or getattr(user, "name", None) or str(uid)
+    await ctx.send(embed=ui.ok(f"**{name}** was unbanned.", "🔓 Unban"))
+
+
+@bot.command(name="mods", aliases=["moderators"])
+@owner_or_admin()
+async def cmd_mods(ctx: commands.Context, action: str = "", target: str = "") -> None:
+    # Choose who may use .ban/.kick/.mute. Usage: .mods add|remove @user | .mods list
+    if ctx.guild is None:
+        await ctx.send(embed=ui.err("Run this in a server."))
+        return
+    cfg = get_config(ctx.guild.id)
+    ids: list[int] = []
+    for x in cfg.get("moderator_user_ids", []):
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            pass
+    action = (action or "").lower()
+    if action in ("", "list"):
+        if not ids:
+            await ctx.send(embed=ui.info(
+                f"No extra moderators yet. Add one with `{PREFIX}mods add @user`.\n"
+                "Bot owners and server admins can always use the mod commands.",
+                "Extra moderators"))
+            return
+        lines = []
+        for uid in ids:
+            m = ctx.guild.get_member(uid)
+            lines.append(f"• {m.mention} (`{uid}`)" if m else f"• `{uid}` (left server)")
+        await ctx.send(embed=ui.embed("🛡️ Extra moderators", "\n".join(lines), "info",
+                                      footer=f"{ui.FOOTER} • mod commands"))
+        return
+    if action not in ("add", "remove"):
+        await ctx.send(embed=ui.info(
+            f"`{PREFIX}mods add @user` · `{PREFIX}mods remove @user` · `{PREFIX}mods list`",
+            "Extra moderators"))
+        return
+    raw = target.strip("<@!>")
+    try:
+        uid = int(raw)
+    except ValueError:
+        await ctx.send(embed=ui.info(f"`{PREFIX}mods {action} @user`", "Extra moderators"))
+        return
+    member = ctx.guild.get_member(uid)
+    name = member.display_name if member else f"`{uid}`"
+    if action == "add":
+        if member is None:
+            await ctx.send(embed=ui.err("That user isn't in this server."))
+            return
+        if member.bot:
+            await ctx.send(embed=ui.err("Bots can't be extra moderators."))
+            return
+        if uid in ids:
+            await ctx.send(embed=ui.info(f"**{name}** is already an extra moderator.",
+                                         "Extra moderators"))
+            return
+        ids.append(uid)
+        update_config(ctx.guild.id, moderator_user_ids=ids)
+        await ctx.send(embed=ui.ok(
+            f"**{name}** can now use `{PREFIX}ban`, `{PREFIX}kick`, and `{PREFIX}mute`.",
+            "Extra moderators"))
+        return
+    if uid not in ids:
+        await ctx.send(embed=ui.info(f"**{name}** isn't on the extra moderator list.",
+                                     "Extra moderators"))
+        return
+    ids.remove(uid)
+    update_config(ctx.guild.id, moderator_user_ids=ids)
+    await ctx.send(embed=ui.ok(f"**{name}** can no longer use the mod commands.",
+                               "Extra moderators"))
 
 
 @bot.command(name="userinfo", aliases=["whois"])
@@ -5585,6 +5902,12 @@ async def cmd_diag(ctx: commands.Context) -> None:
 @cmd_chaton.error
 @cmd_verifysetup.error
 @cmd_verifyoff.error
+@cmd_ban.error
+@cmd_kick.error
+@cmd_mute.error
+@cmd_unmute.error
+@cmd_unban.error
+@cmd_mods.error
 @cmd_xpreset.error
 @cmd_xpadd.error
 @cmd_xpset.error
@@ -5617,6 +5940,11 @@ async def admin_error(ctx: commands.Context, error: commands.CommandError) -> No
             await ctx.send(embed=ui.err(
                 f"Staff only — ask an admin to allow your role with "
                 f"`{PREFIX}warnperm add @yourrole`."))
+        elif ctx.command and ctx.command.name in ("ban", "kick", "mute", "unmute", "unban"):
+            await ctx.send(embed=ui.err(
+                f"Staff only — ask an admin to allow you with `{PREFIX}mods add @you`."))
+        elif ctx.command and ctx.command.name in ("mods", "moderators"):
+            await ctx.send(embed=ui.err("Bot owner or server admin only."))
         else:
             await ctx.send(embed=ui.err("You need **Administrator** or **Manage Server** "
                                         "permission."))
