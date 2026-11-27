@@ -3,6 +3,23 @@
 Built for the Wigglesworth Discord server. Same engine as our guard bot,
 fresh identity + data.
 
+## Shared / persistent settings
+
+All bot and creator settings are saved server-side (never in the browser):
+`guild_config.json` and `creator.json` under `DATA_DIR`, written atomically.
+To share one saved configuration across every user and every bot instance,
+set these environment variables on all instances:
+
+- `BOT_STATE_URL` — base URL of a shared JSON store implementing
+  `GET /state` (returns the JSON document) and `POST /state` (saves the JSON
+  document). Changes made on one instance are then visible to all others.
+- `BOT_STATE_TOKEN` — optional bearer token for that store.
+
+Every save is confirmed before it is reported as successful; if either the
+local file or the shared store fails, the command shows the error instead of
+pretending the change was saved. Settings left in a file that another instance
+updates are picked up automatically.
+
 ## Security (the point of this bot)
 - **Anti-raid**: 5 joins in 15s → lock all channels first, ban the initiator,
   punish followers, auto-unlock. Invite used is tracked to find the recruiter.
