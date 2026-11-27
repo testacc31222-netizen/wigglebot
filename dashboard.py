@@ -1683,7 +1683,11 @@ def create_app():
             val = [int(x) for x in request.form.getlist("value") if x.isdigit()][:50]
         else:
             val = raw[:50]
-        b.update_config(gid, **{name: val})
+        try:
+            b.update_config(gid, **{name: val})
+        except Exception as exc:
+            # A failed save must never look like success to the user.
+            return (f"Could not save settings to the server: {exc}", 500)
         if name.startswith(SEC_LOGGED_PREFIXES):
             try:
                 b.track(gid, "sec", action="config", key=name)

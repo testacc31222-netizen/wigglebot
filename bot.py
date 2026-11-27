@@ -344,7 +344,25 @@ def E(title: str, desc: str = "", kind: str = "info") -> discord.Embed:
 
 # ---------- config persistence ----------
 
+_CONFIG_STORE = None
+
+
+def _config_store():
+    """Shared store for guild config (server-side, never browser state)."""
+    global _CONFIG_STORE
+    if _CONFIG_STORE is None:
+        try:
+            import shared_store
+            _CONFIG_STORE = shared_store.SharedStore(DATA_FILE)
+        except ImportError:
+            _CONFIG_STORE = None
+    return _CONFIG_STORE
+
+
 def load_all_configs() -> dict:
+    store = _config_store()
+    if store is not None:
+        return store.load({})
     if DATA_FILE.exists():
         try:
             return json.loads(DATA_FILE.read_text(encoding="utf-8"))
@@ -353,14 +371,33 @@ def load_all_configs() -> dict:
     return {}
 
 
-def save_all_configs(data: dict) -> None:
-    DATA_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def save_all_configs(data: dict) -> bool:
+    """Persist to the server / shared store. False means nothing was saved."""
+    store = _config_store()
+    if store is not None:
+        ok = store.save(data)
+        if not ok:
+            print(f"[config] save failed: {store.status()['error']}")
+        return ok
+    try:
+        DATA_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return True
+    except OSError as exc:
+        print(f"[config] save failed: {type(exc).__name__}: {exc}")
+        return False
 
 
 configs: dict[str, dict] = load_all_configs()
 
 
 def get_config(guild_id: int) -> dict:
+    # Pick up saves made by another instance sharing the store/volume.
+    store = _config_store()
+    if store is not None and store.has_changed():
+        fresh = store.load({})
+        if isinstance(fresh, dict) and fresh is not configs:
+            configs.clear()
+            configs.update(fresh)
     cfg = {**DEFAULT_GUILD_CONFIG}
     saved = configs.get(str(guild_id), {})
     cfg.update(saved)
@@ -369,10 +406,15 @@ def get_config(guild_id: int) -> dict:
 
 def update_config(guild_id: int, **kwargs) -> dict:
     gid = str(guild_id)
-    current = configs.get(gid, {})
-    current.update(kwargs)
-    configs[gid] = current
-    save_all_configs(configs)
+    previous = dict(configs.get(gid, {}))
+    proposed = dict(previous)
+    proposed.update(kwargs)
+    configs[gid] = proposed
+    if not save_all_configs(configs):
+        # Never show a value that was not actually persisted.
+        configs[gid] = previous
+        err = _config_store().status()["error"] if _config_store() else "save failed"
+        raise RuntimeError(err)
     return get_config(guild_id)
 
 

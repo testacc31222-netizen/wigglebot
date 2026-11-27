@@ -23,7 +23,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 import aiohttp
 import discord
 
-BUILD = "2026-11-23.3"  # bump on every push; printed at startup
+BUILD = "2026-11-27.1"  # bump on every push; printed at startup
 
 bm = None
 _bot = None
@@ -135,32 +135,87 @@ def _fallback_dir():
     return Path(os.getenv("DATA_DIR", "") or Path(__file__).parent)
 
 
+_STORE = None
+
+
+def _store():
+    """Return the shared store for creator data (falls back to plain file)."""
+    global _STORE
+    if _STORE is None or str(_STORE.path) != str(_path()):
+        try:
+            import shared_store
+            _STORE = shared_store.SharedStore(_path())
+        except ImportError:
+            _STORE = None
+    return _STORE
+
+
 def load() -> dict:
+    """Load the latest saved data from the server / shared store."""
     global DATA
-    p = _path()
-    try:
-        if p.exists():
-            raw = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                DATA = raw
-    except (json.JSONDecodeError, OSError):
-        pass
+    store = _store()
+    if store is not None:
+        DATA = store.load({"guilds": {}})
+    else:
+        p = _path()
+        try:
+            if p.exists():
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    DATA = raw
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"[creator] load failed: {type(exc).__name__}: {exc}")
     DATA.setdefault("guilds", {})
     return DATA
 
 
-def save() -> None:
+def save() -> bool:
+    """Persist to the server and shared store. False means nothing was saved."""
+    store = _store()
+    if store is not None:
+        ok = store.save(DATA)
+        if not ok:
+            print(f"[creator] save failed: {store.status()['error']}")
+        return ok
     try:
         p = _path()
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(DATA, indent=2), encoding="utf-8")
         tmp.replace(p)
-    except OSError as exc:
+        return True
+    except (OSError, TypeError, ValueError) as exc:
         print(f"[creator] save failed: {type(exc).__name__}: {exc}")
+        return False
+
+
+def refresh() -> None:
+    """Pick up saves made by another bot instance sharing the same store."""
+    global DATA
+    store = _store()
+    if store is None or not store.has_changed():
+        return
+    fresh = store.load({})
+    if isinstance(fresh, dict) and fresh:
+        DATA = fresh
+        DATA.setdefault("guilds", {})
+
+
+def persistence_status() -> dict:
+    """Expose save state so staff can see whether changes really persisted."""
+    store = _store()
+    return store.status() if store is not None else {"error": "shared_store unavailable"}
+
+
+async def _save_failed(ctx) -> None:
+    """Tell staff a save did not persist, with the reason (never silent)."""
+    err = persistence_status().get("error", "unknown error")
+    await ctx.reply(f"⚠️ That change could not be saved and was not applied: {err}\n"
+                    "Please try again.", mention_author=False)
 
 
 def gdata(guild_id) -> dict:
+    refresh()  # pick up changes saved by other instances / panel users
     gid = str(guild_id)
     if not DATA.get("guilds"):
         load()
@@ -659,40 +714,65 @@ def platform_label(p: str | None) -> str:
 
 
 def progress_embed(guild, g: dict, member: discord.Member) -> discord.Embed:
+    """Creator progress, laid out in clear sections instead of one dense block.
+
+    Every value that used to be shown is still present — nothing is removed.
+    """
     total = approved_count(g, member.id)
     month = approved_count(g, member.id, month_key())
     tier = tier_for(total)
     nxt = next_tier(total)
     uid = member.id
     creator = g["creators"].get(str(uid), {})
-    lines = [
-        f"**Tier:** {tier['name']}  ·  {tier['perk']}",
-        f"**Credits:** {fmt_int(credits(g, uid))}",
-        f"**Videos:** {total} all-time  ·  {month} this month",
-    ]
+    divider = getattr(bm.ui, "DIVIDER", "━━━━━━━━━━━━━━")
+
+    em = bm.ui.embed(
+        f"🎬 Creator progress — {member.display_name}",
+        f"Your creator journey at a glance.\n{divider}",
+        "info",
+        footer="Wigglesworth • creator rewards")
+
+    # ---- Section 1: tier, credits, videos, next tier -----------------------
+    em.add_field(name="Tier", value=f"**{tier['name']}** — {tier['perk']}", inline=False)
+    em.add_field(name="Credits", value=f"**{fmt_int(credits(g, uid))}** credits",
+                 inline=True)
+    em.add_field(name="Videos", value=f"**{total}** all-time\n**{month}** this month",
+                 inline=True)
     if nxt:
-        lines.append(f"**Next tier:** {nxt['name']} at {nxt['videos']} videos ({nxt['videos'] - total} to go)")
-    if creator.get("channel"):
-        lines.append(f"**Linked channel:** {creator.get('channel')}")
-    else:
-        lines.append("**Linked channel:** not set — use `.creator link <your channel url>`")
+        remaining = max(0, nxt["videos"] - total)
+        em.add_field(
+            name="Next tier",
+            value=f"**{nxt['name']}** at {nxt['videos']} videos — **{remaining}** to go",
+            inline=False)
+
+    # ---- Section 2: linked channel ----------------------------------------
+    channel = creator.get("channel")
+    em.add_field(
+        name="Linked channel",
+        value=(str(channel)[:200] if channel
+               else "Not set — use `.creator link <your channel url>`"),
+        inline=False)
+
+    # ---- Section 3: monthly gold (its own section) ------------------------
     month_now = month_key()
     allowance = g.get("allowances", {}).get(str(uid)) or {}
+    gold_lines = []
     if allowance.get("month") == month_now:
         state = "paid ✅" if allowance.get("status") == "paid" else "queued for the owner ⏳"
-        lines.append(f"**Monthly gold:** {fmt_int(allowance.get('gold'))} Gold — {state}")
-        lines.append(f"**Gold available:** {fmt_int(pending_gold(g, uid))} · "
-                     f"**Deducted:** {fmt_int(deducted_gold(g, uid))}")
+        gold_lines.append(f"**Allowance:** {fmt_int(allowance.get('gold'))} Gold — {state}")
     else:
-        lines.append(f"**Monthly gold:** {fmt_int(allowance_gold(g))} Gold each month")
+        gold_lines.append(f"**Monthly allowance:** {fmt_int(allowance_gold(g))} Gold each month")
+    gold_lines.append(f"**Gold available:** {fmt_int(pending_gold(g, uid))}")
+    gold_lines.append(f"**Deducted:** {fmt_int(deducted_gold(g, uid))}")
+    em.add_field(name="Monthly gold", value="\n".join(gold_lines)[:1024], inline=False)
+
+    # ---- Section 4: weekly missions ---------------------------------------
     wk = week_key()
     state = g["missions"].get(wk, {}).get(str(uid), {})
     mlines = []
     for m in MISSIONS:
         done = "✅" if m["videos"] in state.get("awarded", []) else f"{min(state.get('count', 0), m['videos'])}/{m['videos']}"
         mlines.append(f"{done} — {m['label']} (+{m['bonus']} credits)")
-    em = bm.ui.embed(f"🎬 Creator progress — {member.display_name}", "\n".join(lines), "info",
-                     footer="Wigglesworth • creator rewards")
     em.add_field(name="This week's missions", value="\n".join(mlines)[:1024], inline=False)
     return em
 
@@ -2416,13 +2496,17 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
                 return
             amount = max(0, min(int(digits), 1_000_000))
             g["settings"]["allowance_gold"] = amount
-            save()
+            if not save():
+                await _save_failed(ctx)
+                return
             await ctx.reply(f"Monthly gold is now **{fmt_int(amount)}**. "
                             "It applies to the next queued month.", mention_author=False)
             return
         if action in ("on", "off"):
             g["settings"]["allowance_enabled"] = action == "on"
-            save()
+            if not save():
+                await _save_failed(ctx)
+                return
             if action == "on":
                 new = queue_allowances(ctx.guild, g, month)
                 if new:
@@ -2451,7 +2535,9 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         key = {"submitchannel": "submissions_channel", "reviewchannel": "review_channel",
                "approvedchannel": "approved_channel"}[sub]
         g["settings"][key] = cid
-        save()
+        if not save():
+            await _save_failed(ctx)
+            return
         await ctx.reply(f"Set **{sub}** to <#{cid}>.", mention_author=False)
         return
 
@@ -2478,6 +2564,11 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
             f"**Monthly gold:** {fmt_int(allowance_gold(g))} Gold — "
             f"{'on' if s.get('allowance_enabled', True) else 'off'}",
         ]
+        st = persistence_status()
+        saved = datetime.fromtimestamp(st["last_saved"]).strftime("%Y-%m-%d %H:%M") \
+            if st.get("last_saved") else "never"
+        lines.append(f"**Saved:** {saved} UTC · "
+                     f"{'OK' if st.get('error') in ('', 'none') else st.get('error')}")
         missing = [n for n, k in (("submitchannel", "submissions_channel"),
                                   ("reviewchannel", "review_channel"),
                                   ("approvedchannel", "approved_channel"),
@@ -2497,14 +2588,18 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
             await ctx.reply("Usage: `.creator setrole @Content Creator`", mention_author=False)
             return
         g["settings"]["role_id"] = role.id
-        save()
+        if not save():
+            await _save_failed(ctx)
+            return
         await ctx.reply(f"Creator role set to **{role.name}**.", mention_author=False)
         return
 
     if sub == "owner":
         if rest.lower() in ("clear", "none", "0"):
             g["settings"]["owner_id"] = 0
-            save()
+            if not save():
+                await _save_failed(ctx)
+                return
             await ctx.reply("Reward owner cleared — purchases ping OWNER_IDS / the server owner.",
                             mention_author=False)
             return
@@ -2519,7 +2614,9 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
                             mention_author=False)
             return
         g["settings"]["owner_id"] = member.id
-        save()
+        if not save():
+            await _save_failed(ctx)
+            return
         await ctx.reply(f"Shop purchases and monthly gold will ping {member.mention}.",
                         mention_author=False)
         return
@@ -2531,7 +2628,9 @@ async def cmd_creator(ctx, *, args: str = "") -> None:
         secs = max(1, min(int(rest), 3600))
         g["settings"]["min_seconds"] = secs
         g["settings"]["min_seconds_custom"] = True
-        save()
+        if not save():
+            await _save_failed(ctx)
+            return
         await ctx.reply(f"Videos must now be at least **{secs}s** to auto-approve. "
                         "Shorter ones go to staff review.", mention_author=False)
         return
