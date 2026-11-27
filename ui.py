@@ -190,7 +190,7 @@ def rank_embed(*, name: str, avatar: str | None, level: int, xp: int,
     if avatar:
         e.set_thumbnail(url=avatar)
     e.description = (
-        f"{bar(frac, 10, 'xp')}  **{pct_text(frac)}**\n\n"
+        f"{bar(frac, 8, 'xp')}  **{pct_text(frac)}**\n\n"
         f"**{fmt(into)} / {fmt(needed)} XP**  ·  "
         f"**{fmt(max(nxt - xp, 0))} XP** to **Level {level + 1}**"
     )
@@ -215,7 +215,7 @@ def levelup_embed(*, name: str, avatar: str | None, level: int, xp: int,
         e.set_thumbnail(url=avatar)
     e.description = (
         f"**{cut(name, 80)}** just reached **Level {level}**!\n"
-        f"{bar(frac, 12, 'xp')} **{pct_text(frac)}** to Level {level + 1}"
+        f"{bar(frac, 8, 'xp')} **{pct_text(frac)}** to Level {level + 1}"
     )
     e.add_field(name="✨ Total XP", value=f"**{fmt(xp)}**", inline=True)
     e.add_field(name="🎯 Next Level",
@@ -245,7 +245,7 @@ def messages_embed(*, name: str, avatar: str | None, guild_name: str,
 
     if total > 0 and top_total > 0:
         share = total / top_total
-        share_line = f"{bar(share, 10, 'msg')} {pct_text(share)} of #1"
+        share_line = f"{bar(share, 8, 'msg')} {pct_text(share)} of #1"
     else:
         share_line = "Send a message to get on the board!"
     e.add_field(name="🏆 Message Rank",
@@ -258,7 +258,7 @@ def messages_embed(*, name: str, avatar: str | None, guild_name: str,
         e.add_field(
             name="⚡ Level Progress",
             value=(f"**Level {level}** · {fmt(xp)} XP total\n"
-                   f"{bar(frac, 10, 'xp')} {pct_text(frac)} — "
+                   f"{bar(frac, 8, 'xp')} {pct_text(frac)} — "
                    f"**{fmt(max(nxt - xp, 0))} XP** to Level {level + 1}"),
             inline=False)
 
@@ -297,7 +297,7 @@ def leaderboard_embed(*, guild_name: str, guild_icon: str | None,
         you_mark = "  ⬅ *you*" if row.get("is_you") else ""
         parts.append(
             f"{medals[i]} **{cut(row['name'], 24)}** · `LVL {row['level']}`{you_mark}\n"
-            f"{bar(frac, 10, 'xp')} **{fmt(row['xp'])} XP**"
+            f"{bar(frac, 8, 'xp')} **{fmt(row['xp'])} XP**"
         )
     if others:
         parts.append(DIVIDER)
